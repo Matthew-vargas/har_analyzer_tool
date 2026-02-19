@@ -1,0 +1,1297 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HAR Privacy Analyzer</title>
+    <!-- Filename: har_analyzer_tool_frontend.html -->
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+        }
+        .upload-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 2px dashed #ccc;
+            border-radius: 4px;
+        }
+        .filter-section {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f9f9f9;
+            border-radius: 4px;
+        }
+        input[type="file"], input[type="text"], select {
+            margin: 10px 0;
+            padding: 8px;
+            width: 100%;
+            max-width: 400px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .download-report-btn {
+            background-color: #2196F3;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 20px 0;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .download-report-btn:hover {
+            background-color: #1976D2;
+        }
+        .download-report-btn:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .results {
+            margin-top: 30px;
+        }
+        .filter-controls {
+            background-color: #f0f0f0;
+            padding: 20px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+        .provider-filter {
+            margin: 15px 0;
+        }
+        .provider-filter label {
+            font-weight: bold;
+            display: block;
+            margin-bottom: 8px;
+        }
+        .alert {
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 4px;
+            border-left: 4px solid #ff9800;
+            background-color: #fff3e0;
+        }
+        .alert.high {
+            border-left-color: #f44336;
+            background-color: #ffebee;
+        }
+        .alert.medium {
+            border-left-color: #ff9800;
+            background-color: #fff3e0;
+        }
+        .alert.low {
+            border-left-color: #2196F3;
+            background-color: #e3f2fd;
+        }
+        .data-item {
+            margin: 15px 0;
+            padding: 15px;
+            background-color: #f9f9f9;
+            border-radius: 4px;
+            border-left: 4px solid #4CAF50;
+            position: relative;
+        }
+        .data-item.insecure {
+            border-left-color: #f44336;
+            background-color: #ffebee;
+        }
+        .data-type {
+            font-weight: bold;
+            color: #d32f2f;
+            margin-bottom: 5px;
+        }
+        .data-value {
+            font-family: monospace;
+            background-color: #fff;
+            padding: 5px;
+            border-radius: 3px;
+            word-break: break-all;
+            margin: 5px 0;
+        }
+        .provider-section {
+            margin: 20px 0;
+            padding: 20px;
+            background-color: white;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+        }
+        .provider-section.major {
+            border-color: #f44336;
+            background-color: #ffebee;
+        }
+        .provider-header {
+            font-size: 20px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #4CAF50;
+        }
+        .provider-section.major .provider-header {
+            color: #d32f2f;
+            border-bottom-color: #f44336;
+        }
+        .domain-subsection {
+            margin: 15px 0;
+            padding: 15px;
+            background-color: white;
+            border-radius: 4px;
+            border-left: 4px solid #2196F3;
+        }
+        .domain-name {
+            font-size: 16px;
+            font-weight: bold;
+            color: #1976D2;
+            margin-bottom: 10px;
+        }
+        .request-count {
+            color: #666;
+            font-size: 14px;
+        }
+        .error {
+            color: #d32f2f;
+            padding: 10px;
+            background-color: #ffebee;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        h2 {
+            color: #333;
+            margin-top: 30px;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .summary-card {
+            background-color: #f9f9f9;
+            padding: 15px;
+            border-radius: 4px;
+            border-left: 4px solid #4CAF50;
+        }
+        .summary-card.warning {
+            border-left-color: #f44336;
+            background-color: #ffebee;
+        }
+        .summary-label {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .summary-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+        .url-info {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+        .uuid-section {
+            background-color: #e3f2fd;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+            border-left: 4px solid #2196F3;
+        }
+        .uuid-value {
+            font-family: monospace;
+            font-weight: bold;
+            color: #1976D2;
+        }
+        .uuid-domains {
+            margin-top: 5px;
+            font-size: 13px;
+            color: #666;
+        }
+        .shared-uuid {
+            border-left: 4px solid #f44336;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .badge.major {
+            background-color: #f44336;
+            color: white;
+        }
+        .badge.other {
+            background-color: #9e9e9e;
+            color: white;
+        }
+        .badge.insecure {
+            background-color: #ff5722;
+            color: white;
+        }
+        .badge.secure {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .expand-btn {
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        .expand-btn:hover {
+            background-color: #1976D2;
+        }
+        .headers-section {
+            display: none;
+            margin-top: 15px;
+            padding: 15px;
+            background-color: #f5f5f5;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
+        .headers-section.expanded {
+            display: block;
+        }
+        .headers-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        .header-item {
+            margin: 5px 0;
+            padding: 5px;
+            background-color: white;
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .header-name {
+            color: #1976D2;
+            font-weight: bold;
+        }
+        .header-value {
+            color: #666;
+            word-break: break-all;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .status-success {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .status-redirect {
+            background-color: #2196F3;
+            color: white;
+        }
+        .status-error {
+            background-color: #f44336;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>HAR Privacy Analyzer</h1>
+        <p>Upload a .har file to detect personal information in POST requests and third-party cookies</p>
+        
+        <div class="upload-section">
+            <label><strong>Select HAR File:</strong></label><br>
+            <input type="file" id="harFile" accept=".har" />
+            
+            <div class="filter-section">
+                <label><strong>Filter by Domain (optional):</strong></label><br>
+                <input type="text" id="domainFilter" placeholder="e.g., facebook.com or leave empty for all domains" />
+                <p style="font-size: 14px; color: #666; margin: 5px 0;">Enter a domain to see only data sent to that domain, or leave empty to see all domains</p>
+            </div>
+            
+            <button onclick="analyzeFile()" id="analyzeBtn">Analyze POST Requests</button>
+        </div>
+        
+        <div id="results" class="results"></div>
+    </div>
+
+    <script>
+        let analysisData = null;
+        let selectedProvider = 'All';
+        
+        function downloadCSVReport() {
+            if (!analysisData || analysisData.requests_with_pii === 0) {
+                alert('No privacy issues found to export');
+                return;
+            }
+            
+            // CSV Header - Updated to include category
+            let csv = 'Origin Location,Third-Party Provider,Domain,URL,Data Type,Data Category,Flagged Value,Location in Request,Reason for Flag,Verdict,HTTP Status,Security (HTTP/HTTPS),Response Size\n';
+            
+            let foundPIIParams = false;
+            
+            // Iterate through all findings - ONLY include parameter-based detections
+            for (const [provider, providerData] of Object.entries(analysisData.findings_by_provider)) {
+                for (const [domain, findings] of Object.entries(providerData.domains)) {
+                    for (const finding of findings) {
+                        // ONLY export if it's a parameter-based detection (PII or Tracking)
+                        if (!finding.type.includes('Parameter:')) {
+                            continue;
+                        }
+                        
+                        foundPIIParams = true;
+                        
+                        // Determine origin location
+                        const originLocation = finding.location.includes('Cookie') ? 'Cookie' : 
+                                             finding.location.includes('POST') ? 'POST Body' : 
+                                             finding.location.includes('Query') ? 'URL Parameters' : 
+                                             finding.location;
+                        
+                        // Determine category label
+                        const categoryLabel = finding.category === 'true_pii' ? 'Personal Information' : 
+                                            finding.category === 'tracking' ? 'Tracking Identifier' : 
+                                            finding.category === 'analytics' ? 'Analytics Telemetry' :
+                                            'Unknown';
+                        
+                        // Reason for flag - based on category
+                        let reason = '';
+                        if (finding.category === 'true_pii') {
+                            reason = 'Suspicious parameter name suggests identifiable personal information (email, name, address, etc.)';
+                        } else if (finding.category === 'tracking') {
+                            reason = 'Parameter contains anonymous tracking identifiers (session IDs, user IDs, device IDs)';
+                        } else if (finding.category === 'analytics') {
+                            reason = 'Parameter contains analytics telemetry data (performance metrics, event tracking, A/B tests)';
+                        } else {
+                            reason = 'Suspicious parameter name detected';
+                        }
+                        
+                        // Add security concerns to reason
+                        if (finding.is_insecure) {
+                            reason += ' | SECURITY RISK: Sent over unencrypted HTTP connection';
+                        }
+                        
+                        // Determine verdict based on category
+                        let verdict = 'Medium Risk';
+                        if (finding.category === 'true_pii') {
+                            verdict = 'High Risk - Personal Information';
+                        } else if (finding.category === 'tracking') {
+                            verdict = 'Medium Risk - Tracking Identifier';
+                        } else if (finding.category === 'analytics') {
+                            verdict = 'Low Risk - Analytics Telemetry';
+                        }
+                        
+                        if (finding.is_insecure) {
+                            verdict = 'CRITICAL - Insecure Transmission';
+                        }
+                        
+                        // Escape values for CSV
+                        const escapeCsv = (str) => {
+                            if (str === null || str === undefined) return '';
+                            str = String(str);
+                            if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+                                return '"' + str.replace(/"/g, '""') + '"';
+                            }
+                            return str;
+                        };
+                        
+                        const security = finding.is_insecure ? 'HTTP (INSECURE)' : 'HTTPS (Secure)';
+                        const responseSize = formatBytes(finding.response_size);
+                        
+                        csv += `${escapeCsv(originLocation)},`;
+                        csv += `${escapeCsv(provider)},`;
+                        csv += `${escapeCsv(domain)},`;
+                        csv += `${escapeCsv(finding.url)},`;
+                        csv += `${escapeCsv(finding.type)},`;
+                        csv += `${escapeCsv(categoryLabel)},`;
+                        csv += `${escapeCsv(finding.value)},`;
+                        csv += `${escapeCsv(finding.location)},`;
+                        csv += `${escapeCsv(reason)},`;
+                        csv += `${escapeCsv(verdict)},`;
+                        csv += `${escapeCsv(finding.response_status)},`;
+                        csv += `${escapeCsv(security)},`;
+                        csv += `${escapeCsv(responseSize)}\n`;
+                    }
+                }
+            }
+            
+            if (!foundPIIParams) {
+                alert('No parameter-based PII findings to export. The CSV will only include suspicious parameter names.');
+                return;
+            }
+            
+            // Create download
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+            link.setAttribute('href', url);
+            link.setAttribute('download', `privacy_issues_report_${timestamp}.csv`);
+            link.style.visibility = 'hidden';
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+        
+        async function analyzeFile() {
+            const fileInput = document.getElementById('harFile');
+            const domainFilter = document.getElementById('domainFilter').value.trim();
+            const resultsDiv = document.getElementById('results');
+            const btn = document.getElementById('analyzeBtn');
+            
+            if (!fileInput.files[0]) {
+                resultsDiv.innerHTML = '<div class="error">Please select a file first</div>';
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = 'Analyzing...';
+            resultsDiv.innerHTML = '<p>Scanning POST requests for personal information and third-party cookies...</p>';
+            
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('domain', domainFilter);
+            
+            try {
+                const response = await fetch('/analyze', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    resultsDiv.innerHTML = `<div class="error">${data.error}</div>`;
+                } else {
+                    analysisData = data;
+                    selectedProvider = 'All';
+                    displayResults(data);
+                }
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Analyze POST Requests';
+            }
+        }
+        
+        function filterByProvider(provider) {
+            selectedProvider = provider;
+            displayResults(analysisData);
+        }
+        
+        function getSimplifiedDescription(provider, hasFindings, hasCrossSiteUUIDs, hasInsecure, requestCount, hasTruePII, hasTracking, hasAnalytics) {
+            let html = '<div style="background-color: #fff; padding: 15px; margin: 15px 0; border-radius: 4px; border-left: 4px solid ';
+            
+            if (hasInsecure) {
+                // Critical - Insecure transmission
+                html += '#f44336;">';
+                html += '<div style="font-size: 18px; font-weight: bold; color: #f44336; margin-bottom: 10px;">🔓 CRITICAL SECURITY ISSUE</div>';
+                html += '<div style="margin: 8px 0;"><strong>What we found:</strong> Personal information was sent over an unencrypted connection (HTTP instead of HTTPS)</div>';
+                html += '<div style="margin: 8px 0;"><strong>Why this matters:</strong> Anyone monitoring the network can intercept this information</div>';
+                html += '<div style="margin: 8px 0;"><strong>Risk level:</strong> <span style="color: #f44336; font-weight: bold;">Critical</span></div>';
+                html += '<div style="margin: 8px 0;"><strong>Recommendation:</strong> Avoid using this service on public WiFi or unsecured networks</div>';
+            } else if (hasTruePII) {
+                // High - TRUE PII found (email, name, address, etc.)
+                html += '#f44336;">';
+                html += '<div style="font-size: 18px; font-weight: bold; color: #f44336; margin-bottom: 10px;">🔴 PERSONAL INFORMATION DETECTED</div>';
+                html += `<div style="margin: 8px 0;"><strong>What we found:</strong> Your personal information (email, name, address, or similar) was sent to ${provider}</div>`;
+                html += '<div style="margin: 8px 0;"><strong>Why this matters:</strong> This is identifiable information that can be directly linked to you as an individual</div>';
+                html += '<div style="margin: 8px 0;"><strong>Risk level:</strong> <span style="color: #f44336; font-weight: bold;">High</span></div>';
+                html += '<div style="margin: 8px 0;"><strong>Recommendation:</strong> Review if you explicitly consented to sharing this information with third parties</div>';
+            } else if (hasTracking) {
+                // Medium - Only tracking identifiers (session IDs, anonymous IDs)
+                html += '#ff9800;">';
+                html += '<div style="font-size: 18px; font-weight: bold; color: #ff9800; margin-bottom: 10px;">📊 TRACKING IDENTIFIERS DETECTED</div>';
+                html += `<div style="margin: 8px 0;"><strong>What we found:</strong> ${provider} received anonymous tracking identifiers (session IDs, user IDs, device IDs)</div>`;
+                html += '<div style="margin: 8px 0;"><strong>Personal data sent:</strong> No directly identifiable information (name, email, etc.) detected</div>';
+                html += '<div style="margin: 8px 0;"><strong>Why this matters:</strong> These anonymous IDs can track your behavior across pages and sessions, creating a profile of your activity</div>';
+                html += '<div style="margin: 8px 0;"><strong>Risk level:</strong> <span style="color: #ff9800; font-weight: bold;">Medium</span></div>';
+                html += '<div style="margin: 8px 0;"><strong>Note:</strong> While not directly linked to your identity, these can be combined with other data to identify you</div>';
+            } else if (hasAnalytics) {
+                // Low-Medium - Analytics/Performance telemetry
+                html += '#4CAF50;">';
+                html += '<div style="font-size: 18px; font-weight: bold; color: #4CAF50; margin-bottom: 10px;">📈 ANALYTICS & PERFORMANCE MONITORING</div>';
+                html += `<div style="margin: 8px 0;"><strong>What we found:</strong> ${provider} received analytics telemetry and performance monitoring data</div>`;
+                html += '<div style="margin: 8px 0;"><strong>Personal data sent:</strong> None detected</div>';
+                html += '<div style="margin: 8px 0;"><strong>Data type:</strong> Page views, performance metrics, A/B test assignments, event tracking, technical diagnostics</div>';
+                html += '<div style="margin: 8px 0;"><strong>Why this matters:</strong> While typically anonymous, this data tracks your browsing patterns and can be used to optimize user experience or for analytics</div>';
+                html += '<div style="margin: 8px 0;"><strong>Risk level:</strong> <span style="color: #4CAF50; font-weight: bold;">Low</span></div>';
+                html += '<div style="margin: 8px 0;"><strong>Note:</strong> This is standard analytics data used by most websites for performance monitoring and user behavior analysis</div>';
+            } else {
+                // Low - Only UUIDs/general tracking
+                html += '#2196F3;">';
+                html += '<div style="font-size: 18px; font-weight: bold; color: #2196F3; margin-bottom: 10px;">📊 TRACKING ACTIVITY</div>';
+                html += `<div style="margin: 8px 0;"><strong>What we found:</strong> ${provider} received ${requestCount} request(s) with tracking identifiers</div>`;
+                html += '<div style="margin: 8px 0;"><strong>Personal data sent:</strong> None detected</div>';
+                html += '<div style="margin: 8px 0;"><strong>Why this matters:</strong> They can track which pages you visit and your browsing behavior, even without knowing your identity</div>';
+                html += '<div style="margin: 8px 0;"><strong>Risk level:</strong> <span style="color: #2196F3; font-weight: bold;">Low-Medium</span></div>';
+            }
+            
+            html += '</div>';
+            return html;
+        }
+        
+        function getMetaTrackingDescription(metaData) {
+            const piiCount = metaData.meta_tracking_pii_count || 0;
+            const requestCount = metaData.meta_tracking_requests ? metaData.meta_tracking_requests.length : 0;
+            const domains = metaData.meta_tracking_domains || [];
+            const trackingTypes = metaData.meta_tracking_types || [];
+            const piiTypes = metaData.meta_tracking_pii_types || [];
+            
+            let html = '<div style="background-color: #ffebee; padding: 25px; margin: 25px 0; border-radius: 8px; border-left: 6px solid #d32f2f; box-shadow: 0 4px 12px rgba(211,47,47,0.25);">';
+            
+            html += '<div style="font-size: 22px; font-weight: bold; color: #d32f2f; margin-bottom: 18px; display: flex; align-items: center; gap: 10px;">';
+            html += '🔴 META/FACEBOOK TRACKING DETECTED';
+            html += '</div>';
+            
+            html += '<div style="margin: 12px 0; line-height: 1.7; font-size: 15px;">';
+            html += '<strong style="color: #d32f2f;">⚠️ What we found:</strong> ';
+            html += `This website is using <strong>Meta tracking technology</strong>. We detected <strong>${requestCount}</strong> tracking request(s) `;
+            
+            // Show tracking types
+            if (trackingTypes.length > 0) {
+                const typesList = trackingTypes.map(t => `<strong>${t}</strong>`).join(', ');
+                html += `(${typesList}) `;
+            }
+            
+            html += 'to Meta\'s servers';
+            
+            if (domains.length > 0) {
+                html += ` from: <code style="background: white; padding: 3px 8px; border-radius: 4px; font-size: 13px;">${domains.join(', ')}</code>`;
+            }
+            html += '.';
+            html += '</div>';
+            
+            if (piiCount > 0) {
+                html += '<div style="margin: 15px 0; padding: 15px; background-color: white; border-radius: 6px; border-left: 4px solid #f44336; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">';
+                html += '<strong style="color: #d32f2f; font-size: 16px;">🚨 Personal Information Shared with Meta:</strong><br>';
+                html += `<span style="font-size: 14px; margin-top: 8px; display: block;">Meta/Facebook received <strong style="color: #d32f2f;">${piiCount}</strong> piece(s) of your personal information`;
+                if (piiTypes.length > 0) {
+                    html += `, including: <strong>${piiTypes.join(', ')}</strong>`;
+                }
+                html += '</span>';
+                html += '</div>';
+            }
+            
+            html += '<div style="margin: 12px 0; line-height: 1.7; font-size: 15px;">';
+            html += '<strong>Why this is significant:</strong> ';
+            html += 'Meta Pixel and other Meta tracking technologies allow Facebook/Instagram/WhatsApp to track your activity across the entire web, ';
+            html += 'combining it with your Meta platform profiles to build detailed behavioral profiles for targeted advertising. ';
+            html += '<strong>This tracking happens even if you\'re not logged into any Meta service.</strong>';
+            html += '</div>';
+            
+            html += '<div style="margin: 15px 0; background-color: #fff3cd; padding: 15px; border-radius: 6px; border-left: 4px solid #ff6f00;">';
+            html += '<strong style="color: #e65100;">📋 Known Privacy Issues with Meta Tracking:</strong>';
+            html += '<ul style="margin: 10px 0 5px 0; padding-left: 25px; line-height: 1.8;">';
+            html += '<li><strong>Healthcare Data Breaches:</strong> Meta Pixel has been involved in major breaches affecting millions of patients, exposing sensitive medical information</li>';
+            html += '<li><strong>Regulatory Fines:</strong> Over €2.9 billion in GDPR fines issued in 2024 for improper Meta Pixel implementations</li>';
+            html += '<li><strong>Lack of Consent:</strong> Often operates without proper user consent, violating GDPR, CCPA, and other privacy regulations</li>';
+            html += '<li><strong>Cross-Border Data Transfers:</strong> Personal data is transferred to the U.S. where privacy protections may be weaker than EU standards</li>';
+            html += '<li><strong>Government & Crime Reports:</strong> Found on UK police crime reporting forms and government websites, exposing sensitive information</li>';
+            html += '</ul>';
+            html += '</div>';
+            
+            html += '<div style="margin: 12px 0; line-height: 1.7; font-size: 15px;">';
+            html += '<strong>Risk Level:</strong> ';
+            html += '<span style="background-color: #d32f2f; color: white; padding: 6px 16px; border-radius: 20px; font-weight: bold; font-size: 14px;">HIGH</span>';
+            html += '</div>';
+            
+            html += '<div style="margin: 15px 0; padding: 15px; background-color: #e8f5e9; border-radius: 6px; border-left: 4px solid #4CAF50;">';
+            html += '<strong style="color: #2e7d32;">💡 What you can do to protect yourself:</strong><br>';
+            html += '<ul style="margin: 10px 0 5px 0; padding-left: 25px; line-height: 1.8; font-size: 14px;">';
+            html += '<li><strong>Browser Extensions:</strong> Install uBlock Origin, Privacy Badger, or similar tracking blockers</li>';
+            html += '<li><strong>Facebook Settings:</strong> Review "Off-Facebook Activity" in your Facebook privacy settings to see and clear tracking data</li>';
+            html += '<li><strong>Privacy-Focused Browsers:</strong> Use Firefox with Enhanced Tracking Protection or Brave browser</li>';
+            html += '<li><strong>Container Tabs:</strong> Use Firefox Multi-Account Containers to isolate Facebook from other browsing</li>';
+            html += '<li><strong>VPN Usage:</strong> Consider using a VPN to mask your IP address from trackers</li>';
+            html += '</ul>';
+            html += '</div>';
+            
+            html += '</div>';
+            
+            return html;
+        }
+        
+        function getTikTokTrackingDescription(tiktokData) {
+            const piiCount = tiktokData.tiktok_tracking_pii_count || 0;
+            const requestCount = tiktokData.tiktok_tracking_requests ? tiktokData.tiktok_tracking_requests.length : 0;
+            const domains = tiktokData.tiktok_tracking_domains || [];
+            const trackingTypes = tiktokData.tiktok_tracking_types || [];
+            const piiTypes = tiktokData.tiktok_tracking_pii_types || [];
+            
+            let html = '<div style="background-color: #ffebee; padding: 25px; margin: 25px 0; border-radius: 8px; border-left: 6px solid #d32f2f; box-shadow: 0 4px 12px rgba(211,47,47,0.25);">';
+            
+            html += '<div style="font-size: 22px; font-weight: bold; color: #d32f2f; margin-bottom: 18px; display: flex; align-items: center; gap: 10px;">';
+            html += '🔴 TIKTOK/BYTEDANCE TRACKING DETECTED';
+            html += '</div>';
+            
+            html += '<div style="margin: 12px 0; line-height: 1.7; font-size: 15px;">';
+            html += '<strong style="color: #d32f2f;">⚠️ What we found:</strong> ';
+            html += `This website is using <strong>TikTok tracking technology</strong>. We detected <strong>${requestCount}</strong> tracking request(s) `;
+            
+            // Show tracking types
+            if (trackingTypes.length > 0) {
+                const typesList = trackingTypes.map(t => `<strong>${t}</strong>`).join(', ');
+                html += `(${typesList}) `;
+            }
+            
+            html += 'to TikTok/ByteDance servers';
+            
+            if (domains.length > 0) {
+                html += ` from: <code style="background: white; padding: 3px 8px; border-radius: 4px; font-size: 13px;">${domains.join(', ')}</code>`;
+            }
+            html += '.';
+            html += '</div>';
+            
+            if (piiCount > 0) {
+                html += '<div style="margin: 15px 0; padding: 15px; background-color: white; border-radius: 6px; border-left: 4px solid #f44336; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">';
+                html += '<strong style="color: #d32f2f; font-size: 16px;">🚨 Personal Information Shared with TikTok:</strong><br>';
+                html += `<span style="font-size: 14px; margin-top: 8px; display: block;">TikTok/ByteDance received <strong style="color: #d32f2f;">${piiCount}</strong> piece(s) of your personal information`;
+                if (piiTypes.length > 0) {
+                    html += `, including: <strong>${piiTypes.join(', ')}</strong>`;
+                }
+                html += '</span>';
+                html += '</div>';
+            }
+            
+            html += '<div style="margin: 12px 0; line-height: 1.7; font-size: 15px;">';
+            html += '<strong>Why this is critical:</strong> ';
+            html += 'TikTok Pixel captures and transmits user data to servers controlled by ByteDance, a Chinese company. ';
+            html += '<strong>Research has shown TikTok tracking captures data BEFORE users consent,</strong> including hashed email addresses and phone numbers from form fields. ';
+            html += 'This data is sent to Chinese servers where privacy protections may not meet Western standards.';
+            html += '</div>';
+            
+            html += '<div style="margin: 15px 0; background-color: #fff3cd; padding: 15px; border-radius: 6px; border-left: 4px solid #ff6f00;">';
+            html += '<strong style="color: #e65100;">📋 Known Issues with TikTok Tracking:</strong>';
+            html += '<ul style="margin: 10px 0 5px 0; padding-left: 25px; line-height: 1.8;">';
+            html += '<li><strong>Pre-Consent Data Capture:</strong> Australian investigation found TikTok Pixel capturing email and phone data before users agreed to privacy policies</li>';
+            html += '<li><strong>Class Action Lawsuits:</strong> Filed in California for collecting data from non-TikTok users without consent, violating wiretapping laws</li>';
+            html += '<li><strong>Government Website Tracking:</strong> Found on 30 U.S. state government websites, including states that banned TikTok from official networks</li>';
+            html += '<li><strong>Data Sent to China:</strong> User data transmitted to Chinese servers raises national security and privacy concerns</li>';
+            html += '<li><strong>Tracks Non-Users:</strong> You don\'t need a TikTok account for ByteDance to collect your data through embedded tracking pixels</li>';
+            html += '<li><strong>Misconfiguration Risks:</strong> $1.45M fine for Swedish pharmacy after misconfigured pixel leaked sensitive data</li>';
+            html += '</ul>';
+            html += '</div>';
+            
+            html += '<div style="margin: 12px 0; line-height: 1.7; font-size: 15px;">';
+            html += '<strong>Risk Level:</strong> ';
+            html += '<span style="background-color: #d32f2f; color: white; padding: 6px 16px; border-radius: 20px; font-weight: bold; font-size: 14px;">CRITICAL</span>';
+            html += '</div>';
+            
+            html += '<div style="margin: 15px 0; padding: 15px; background-color: #e8f5e9; border-radius: 6px; border-left: 4px solid #4CAF50;">';
+            html += '<strong style="color: #2e7d32;">💡 What you can do to protect yourself:</strong><br>';
+            html += '<ul style="margin: 10px 0 5px 0; padding-left: 25px; line-height: 1.8; font-size: 14px;">';
+            html += '<li><strong>Browser Extensions:</strong> Install uBlock Origin or Privacy Badger to block TikTok tracking pixels</li>';
+            html += '<li><strong>Avoid TikTok Integration:</strong> Be cautious on websites that offer "Login with TikTok" or other TikTok features</li>';
+            html += '<li><strong>Privacy-Focused Browsers:</strong> Use Firefox with Enhanced Tracking Protection or Brave browser</li>';
+            html += '<li><strong>DNS-Level Blocking:</strong> Use DNS services like NextDNS or Pi-hole to block TikTok tracking domains</li>';
+            html += '<li><strong>VPN with Ad Blocking:</strong> Some VPNs include built-in tracker blocking features</li>';
+            html += '<li><strong>Review App Permissions:</strong> If you use TikTok app, review and limit data sharing permissions in settings</li>';
+            html += '</ul>';
+            html += '</div>';
+            
+            html += '</div>';
+            
+            return html;
+        }
+        
+        function getLinkedInTrackingDescription(linkedinData) {
+            const piiCount = linkedinData.linkedin_tracking_pii_count || 0;
+            const requestCount = linkedinData.linkedin_tracking_requests ? linkedinData.linkedin_tracking_requests.length : 0;
+            const domains = linkedinData.linkedin_tracking_domains || [];
+            const trackingTypes = linkedinData.linkedin_tracking_types || [];
+            const piiTypes = linkedinData.linkedin_tracking_pii_types || [];
+            
+            // ORANGE color scheme for HIGH RISK (not critical like Meta/TikTok)
+            let html = '<div style="background-color: #fff3e0; padding: 25px; margin: 25px 0; border-radius: 8px; border-left: 6px solid #ff9800; box-shadow: 0 4px 12px rgba(255,152,0,0.25);">';
+            
+            html += '<div style="font-size: 22px; font-weight: bold; color: #e65100; margin-bottom: 18px; display: flex; align-items: center; gap: 10px;">';
+            html += '🟠 LINKEDIN INSIGHT TAG DETECTED';
+            html += '</div>';
+            
+            html += '<div style="margin: 12px 0; line-height: 1.7; font-size: 15px;">';
+            html += '<strong style="color: #e65100;">⚠️ What we found:</strong> ';
+            html += `This website is using <strong>LinkedIn tracking technology</strong>. We detected <strong>${requestCount}</strong> tracking request(s) `;
+            
+            // Show tracking types
+            if (trackingTypes.length > 0) {
+                const typesList = trackingTypes.map(t => `<strong>${t}</strong>`).join(', ');
+                html += `(${typesList}) `;
+            }
+            
+            html += 'to LinkedIn\'s servers';
+            
+            if (domains.length > 0) {
+                html += ` from: <code style="background: white; padding: 3px 8px; border-radius: 4px; font-size: 13px;">${domains.join(', ')}</code>`;
+            }
+            html += '.';
+            html += '</div>';
+            
+            if (piiCount > 0) {
+                html += '<div style="margin: 15px 0; padding: 15px; background-color: white; border-radius: 6px; border-left: 4px solid #ff9800; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">';
+                html += '<strong style="color: #e65100; font-size: 16px;">🚨 Personal Information Shared with LinkedIn:</strong><br>';
+                html += `<span style="font-size: 14px; margin-top: 8px; display: block;">LinkedIn received <strong style="color: #e65100;">${piiCount}</strong> piece(s) of your personal information`;
+                if (piiTypes.length > 0) {
+                    html += `, including: <strong>${piiTypes.join(', ')}</strong>`;
+                }
+                html += '</span>';
+                html += '</div>';
+            }
+            
+            html += '<div style="margin: 12px 0; line-height: 1.7; font-size: 15px;">';
+            html += '<strong>Why this matters:</strong> ';
+            html += 'LinkedIn Insight Tag tracks your website activity and matches you with your LinkedIn profile to build detailed professional behavioral profiles. ';
+            html += 'This data is used for targeted B2B advertising and can reveal sensitive professional and personal information, especially when found on healthcare or sensitive service websites.';
+            html += '</div>';
+            
+            html += '<div style="margin: 15px 0; background-color: #ffecb3; padding: 15px; border-radius: 6px; border-left: 4px solid #ffa000;">';
+            html += '<strong style="color: #e65100;">📋 Known Privacy Issues with LinkedIn Insight Tag:</strong>';
+            html += '<ul style="margin: 10px 0 5px 0; padding-left: 25px; line-height: 1.8;">';
+            html += '<li><strong>Healthcare Data Collection:</strong> Three class action lawsuits filed in 2024 alleging LinkedIn illegally intercepted sensitive healthcare information including gender, sexual orientation, and medical conditions</li>';
+            html += '<li><strong>California Wiretapping Claims:</strong> Lawsuits under California Invasion of Privacy Act (CIPA) for tracking without proper consent</li>';
+            html += '<li><strong>GDPR Violations:</strong> Requires explicit opt-in consent under GDPR; penalties up to €20 million or 4% of global revenue</li>';
+            html += '<li><strong>Profile Matching:</strong> Automatically matches website visitors with LinkedIn accounts for cross-site behavioral tracking</li>';
+            html += '<li><strong>Enhanced Matching:</strong> Can collect and hash emails before sending to LinkedIn for improved targeting</li>';
+            html += '<li><strong>Similar to Meta Pixel:</strong> Uses same tracking methodology that has resulted in dozens of Meta lawsuits</li>';
+            html += '</ul>';
+            html += '</div>';
+            
+            html += '<div style="margin: 12px 0; line-height: 1.7; font-size: 15px;">';
+            html += '<strong>Risk Level:</strong> ';
+            html += '<span style="background-color: #ff9800; color: white; padding: 6px 16px; border-radius: 20px; font-weight: bold; font-size: 14px;">HIGH RISK</span>';
+            html += '</div>';
+            
+            html += '<div style="margin: 15px 0; padding: 15px; background-color: #e8f5e9; border-radius: 6px; border-left: 4px solid #4CAF50;">';
+            html += '<strong style="color: #2e7d32;">💡 What you can do to protect yourself:</strong><br>';
+            html += '<ul style="margin: 10px 0 5px 0; padding-left: 25px; line-height: 1.8; font-size: 14px;">';
+            html += '<li><strong>Browser Extensions:</strong> Install uBlock Origin, Privacy Badger, or Ghostery to block LinkedIn tracking</li>';
+            html += '<li><strong>LinkedIn Privacy Settings:</strong> Review "Data privacy" settings in your LinkedIn account and opt out of ad tracking</li>';
+            html += '<li><strong>Cookie Blockers:</strong> Use browser settings or extensions to block third-party cookies from LinkedIn domains</li>';
+            html += '<li><strong>Privacy-Focused Browsers:</strong> Use Firefox with Enhanced Tracking Protection or Brave browser</li>';
+            html += '<li><strong>Avoid "Sign in with LinkedIn":</strong> This feature can enable additional cross-site tracking</li>';
+            html += '<li><strong>VPN Usage:</strong> Consider using a VPN to mask your IP address from LinkedIn tracking</li>';
+            html += '</ul>';
+            html += '</div>';
+            
+            html += '</div>';
+            
+            return html;
+        }
+        
+        function getCrossSiteTrackingDescription(uuidCount, domainCount, domains) {
+            let html = '<div style="background-color: #ffebee; padding: 15px; margin: 15px 0; border-radius: 4px; border-left: 4px solid #f44336;">';
+            html += '<div style="font-size: 18px; font-weight: bold; color: #f44336; margin-bottom: 10px;">⚠️ CROSS-SITE TRACKING DETECTED</div>';
+            html += `<div style="margin: 8px 0;"><strong>What we found:</strong> ${uuidCount} tracking ID(s) were sent to ${domainCount} different companies</div>`;
+            html += `<div style="margin: 8px 0;"><strong>Companies involved:</strong> ${domains.slice(0, 5).join(', ')}${domainCount > 5 ? ` and ${domainCount - 5} more` : ''}</div>`;
+            html += '<div style="margin: 8px 0;"><strong>Why this matters:</strong> Multiple companies can now link your activity across different websites and build a comprehensive profile</div>';
+            html += '<div style="margin: 8px 0;"><strong>Risk level:</strong> <span style="color: #ff9800; font-weight: bold;">Medium-High</span></div>';
+            html += '<div style="margin: 8px 0;"><strong>What this enables:</strong> Cross-site tracking allows advertisers to follow you across the web and target you with personalized ads</div>';
+            html += '</div>';
+            return html;
+        }
+        
+        function toggleHeaders(findingId) {
+            const headersSection = document.getElementById('headers-' + findingId);
+            if (headersSection) {
+                headersSection.classList.toggle('expanded');
+            }
+        }
+        
+        function getStatusBadge(status) {
+            if (status >= 200 && status < 300) {
+                return `<span class="status-badge status-success">${status}</span>`;
+            } else if (status >= 300 && status < 400) {
+                return `<span class="status-badge status-redirect">${status}</span>`;
+            } else if (status >= 400) {
+                return `<span class="status-badge status-error">${status}</span>`;
+            }
+            return `<span class="status-badge">${status}</span>`;
+        }
+        
+        function displayResults(data) {
+            const resultsDiv = document.getElementById('results');
+            
+            let html = '<h2>Privacy Analysis Results (POST Requests Only)</h2>';
+            
+            // CRITICAL ALERT: Meta/Facebook Tracking - Show at the very top
+            if (data.meta_tracking_detected) {
+                html += getMetaTrackingDescription(data);
+            }
+            
+            // CRITICAL ALERT: TikTok/ByteDance Tracking - Show right after Meta
+            if (data.tiktok_tracking_detected) {
+                html += getTikTokTrackingDescription(data);
+            }
+            
+            // HIGH RISK ALERT: LinkedIn Insight Tag - Show after critical alerts
+            if (data.linkedin_tracking_detected) {
+                html += getLinkedInTrackingDescription(data);
+            }
+            
+            // Debug info - show all POST domains found AT THE TOP
+            if (data.debug_all_post_domains && data.debug_all_post_domains.length > 0) {
+                html += '<div class="alert low" style="margin: 20px 0;">';
+                html += '<strong>🔍 Debug - All POST Request Domains Found in HAR File:</strong><br>';
+                html += '<div style="font-family: monospace; font-size: 12px; margin-top: 10px; max-height: 300px; overflow-y: auto; background: white; padding: 10px; border-radius: 4px;">';
+                
+                // Show domains with their classification
+                if (data.debug_domain_classifications) {
+                    for (const domain of data.debug_all_post_domains) {
+                        const provider = data.debug_domain_classifications[domain] || 'Unknown';
+                        const color = provider === 'Other' ? '#ff9800' : (provider === 'Unknown' ? '#f44336' : '#4CAF50');
+                        html += `<div style="margin: 3px 0;"><span style="color: ${color}; font-weight: bold;">${provider}</span> ← ${domain}</div>`;
+                    }
+                } else {
+                    html += data.debug_all_post_domains.sort().join('<br>');
+                }
+                
+                html += '</div>';
+                html += `<div style="margin-top: 10px; font-size: 14px;">Total unique POST domains: ${data.debug_all_post_domains.length}</div>`;
+                html += '</div>';
+            }
+            
+            if (data.filter_domain) {
+                html += `<div class="alert low">Showing results for domain: <strong>${data.filter_domain}</strong></div>`;
+            }
+            
+            // Add download report button if PII found
+            if (data.requests_with_pii > 0) {
+                html += `<div style="text-align: center; margin: 20px 0;">`;
+                html += `<button class="download-report-btn" onclick="downloadCSVReport()">📥 Download Privacy Issues Report (CSV)</button>`;
+                html += `<p style="color: #666; font-size: 14px; margin-top: 10px;">Export all flagged privacy issues to CSV for review and documentation</p>`;
+                html += `</div>`;
+            }
+            
+            html += '<div class="summary-grid">';
+            html += `<div class="summary-card"><div class="summary-label">Total POST Requests</div><div class="summary-value">${data.total_post_requests}</div></div>`;
+            html += `<div class="summary-card"><div class="summary-label">Analyzed POST Requests</div><div class="summary-value">${data.analyzed_requests}</div></div>`;
+            html += `<div class="summary-card"><div class="summary-label">POST Requests with PII</div><div class="summary-value">${data.requests_with_pii}</div></div>`;
+            
+            if (data.insecure_requests_count > 0) {
+                html += `<div class="summary-card warning"><div class="summary-label">⚠️ Insecure HTTP Requests</div><div class="summary-value">${data.insecure_requests_count}</div></div>`;
+            }
+            
+            html += `<div class="summary-card"><div class="summary-label">Third-Party Providers</div><div class="summary-value">${data.third_party_providers.length}</div></div>`;
+            html += '</div>';
+            
+            // Insecure requests warning
+            if (data.insecure_requests_count > 0) {
+                html += '<div class="alert high">';
+                html += `<strong>🔓 SECURITY WARNING:</strong> Found ${data.insecure_requests_count} request(s) sent over insecure HTTP (not HTTPS) containing personal information!`;
+                html += '<ul style="margin-top: 10px;">';
+                for (const req of data.insecure_requests) {
+                    html += `<li>${req.domain} - ${req.findings_count} PII items found</li>`;
+                }
+                html += '</ul>';
+                html += '</div>';
+            }
+            
+            // UUID Tracking Section
+            if (data.uuid_tracking && Object.keys(data.uuid_tracking.shared_uuids).length > 0) {
+                html += '<h2>🔍 UUID/GUID Tracking Analysis</h2>';
+                
+                // Add simplified description for cross-site tracking
+                const sharedUuidCount = Object.keys(data.uuid_tracking.shared_uuids).length;
+                const allDomainsInvolved = new Set();
+                Object.values(data.uuid_tracking.shared_uuids).forEach(domains => {
+                    domains.forEach(d => allDomainsInvolved.add(d));
+                });
+                
+                html += getCrossSiteTrackingDescription(sharedUuidCount, allDomainsInvolved.size, Array.from(allDomainsInvolved));
+                
+                html += '<div class="alert high">⚠️ Found UUIDs being shared across multiple domains - potential cross-site tracking!</div>';
+                
+                for (const [uuid, domains] of Object.entries(data.uuid_tracking.shared_uuids)) {
+                    html += `<div class="uuid-section shared-uuid">`;
+                    html += `<div class="uuid-value">UUID: ${uuid}</div>`;
+                    html += `<div class="uuid-domains"><strong>Shared with ${domains.length} domains:</strong> ${domains.join(', ')}</div>`;
+                    html += `</div>`;
+                }
+            }
+            
+            if (data.uuid_tracking && Object.keys(data.uuid_tracking.uuids_by_domain).length > 0) {
+                const singleDomainCount = Object.keys(data.uuid_tracking.uuids_by_domain).length - Object.keys(data.uuid_tracking.shared_uuids).length;
+                if (singleDomainCount > 0) {
+                    html += `<div class="alert low">Found ${data.uuid_tracking.total_unique_uuids} unique UUIDs total (${singleDomainCount} used by single domains)</div>`;
+                }
+            }
+            
+            // Provider Filter Controls
+            if (data.requests_with_pii > 0 || (data.all_requests_by_provider && Object.keys(data.all_requests_by_provider).length > 0)) {
+                html += '<div class="filter-controls">';
+                html += '<div class="provider-filter">';
+                html += '<label>Filter by Third-Party Provider:</label>';
+                html += '<select id="providerSelect" onchange="filterByProvider(this.value)">';
+                html += '<option value="All">All Providers</option>';
+                
+                // Get all providers from both PII findings and all requests
+                let allProvidersList = new Set();
+                if (data.findings_by_provider) {
+                    Object.keys(data.findings_by_provider).forEach(p => allProvidersList.add(p));
+                }
+                if (data.all_requests_by_provider) {
+                    Object.keys(data.all_requests_by_provider).forEach(p => allProvidersList.add(p));
+                }
+                
+                // Major providers first
+                const majorProviders = ['Facebook', 'Google', 'Google AdSense', 'Stack Adapt', 'Bing', 'LinkedIn Ads', 'HubSpot', 'Twitter/X', 'TikTok', 'Amazon', 'Microsoft', 'Adobe', 'Salesforce'];
+                const foundMajorProviders = Array.from(allProvidersList).filter(p => majorProviders.includes(p));
+                const otherProviders = Array.from(allProvidersList).filter(p => !majorProviders.includes(p) && p !== 'Other');
+                
+                foundMajorProviders.forEach(provider => {
+                    const selected = provider === selectedProvider ? 'selected' : '';
+                    html += `<option value="${provider}" ${selected}>${provider}</option>`;
+                });
+                
+                if (Array.from(allProvidersList).includes('Other')) {
+                    const selected = 'Other' === selectedProvider ? 'selected' : '';
+                    html += `<option value="Other" ${selected}>Other Third-Party Cookies</option>`;
+                }
+                
+                html += '</select>';
+                html += '</div>';
+                html += '</div>';
+            }
+            
+            if (data.requests_with_pii === 0 && (!data.all_requests_by_provider || Object.keys(data.all_requests_by_provider).length === 0)) {
+                html += '<div class="alert low">No personal information detected in POST requests.</div>';
+            } else {
+                if (data.requests_with_pii > 0) {
+                    html += `<div class="alert ${data.requests_with_pii > 10 ? 'high' : 'medium'}">
+                        ⚠️ Found ${data.requests_with_pii} POST request(s) containing potential personal information
+                    </div>`;
+                }
+                
+                html += '<h2>Third-Party POST Requests Analysis</h2>';
+                
+                // Get ALL providers from both sources
+                let providersToShow = new Set();
+                if (data.findings_by_provider) {
+                    Object.keys(data.findings_by_provider).forEach(p => providersToShow.add(p));
+                }
+                if (data.all_requests_by_provider) {
+                    Object.keys(data.all_requests_by_provider).forEach(p => providersToShow.add(p));
+                }
+                
+                console.log('Providers to show:', Array.from(providersToShow));
+                console.log('All requests data:', data.all_requests_by_provider);
+                
+                // Define major providers for ordering
+                const majorProviders = ['Facebook', 'Google', 'Google AdSense', 'Stack Adapt', 'Bing', 'LinkedIn Ads', 'HubSpot', 'Twitter/X', 'TikTok', 'Amazon', 'Microsoft', 'Adobe', 'Salesforce'];
+                
+                // Separate providers into Privacy Concerns and Analytics Activity
+                const privacyProviders = [];
+                const analyticsProviders = [];
+                
+                for (const provider of Array.from(providersToShow)) {
+                    const providerData = data.findings_by_provider ? data.findings_by_provider[provider] : null;
+                    
+                    // Check if this provider has ONLY analytics findings
+                    let hasOnlyAnalytics = false;
+                    let hasPrivacyConcerns = false;
+                    
+                    if (providerData && providerData.domains) {
+                        for (const findings of Object.values(providerData.domains)) {
+                            for (const finding of findings) {
+                                if (finding.category === 'analytics') {
+                                    hasOnlyAnalytics = true;
+                                } else if (finding.category === 'true_pii' || finding.category === 'tracking') {
+                                    hasPrivacyConcerns = true;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Categorize provider
+                    if (hasPrivacyConcerns) {
+                        privacyProviders.push(provider);
+                    } else if (hasOnlyAnalytics) {
+                        analyticsProviders.push(provider);
+                    } else if (!providerData) {
+                        // No findings, just tracking - add to privacy concerns
+                        privacyProviders.push(provider);
+                    } else {
+                        privacyProviders.push(provider);
+                    }
+                }
+                
+                // Sort both lists
+                const sortProviders = (providers) => {
+                    return providers.sort((a, b) => {
+                        const aIsMajor = majorProviders.includes(a);
+                        const bIsMajor = majorProviders.includes(b);
+                        
+                        if (aIsMajor && !bIsMajor) return -1;
+                        if (!aIsMajor && bIsMajor) return 1;
+                        if (a === 'Other') return 1;
+                        if (b === 'Other') return -1;
+                        return a.localeCompare(b);
+                    });
+                };
+                
+                const sortedPrivacyProviders = sortProviders(privacyProviders);
+                const sortedAnalyticsProviders = sortProviders(analyticsProviders);
+                
+                console.log('Privacy providers:', sortedPrivacyProviders);
+                console.log('Analytics providers:', sortedAnalyticsProviders);
+                
+                let findingIdCounter = 0;
+                
+                // SECTION 1: PRIVACY CONCERNS (High/Medium Risk)
+                if (sortedPrivacyProviders.length > 0) {
+                    html += '<h3 style="color: #f44336; margin-top: 30px;">🔴 Privacy Concerns (High/Medium Risk)</h3>';
+                    html += '<p style="color: #666; margin-bottom: 20px;">These providers received personal information or tracking identifiers that could identify you or profile your behavior.</p>';
+                    
+                    for (const provider of sortedPrivacyProviders) {
+                        // Apply provider filter
+                        if (selectedProvider !== 'All' && selectedProvider !== provider) {
+                            continue;
+                        }
+                        
+                        const providerData = data.findings_by_provider ? data.findings_by_provider[provider] : null;
+                        const allRequestsData = data.all_requests_by_provider ? data.all_requests_by_provider[provider] : null;
+                        
+                        console.log(`Processing privacy provider: ${provider}`, {providerData, allRequestsData});
+                        
+                        const isMajor = majorProviders.includes(provider);
+                        const providerClass = isMajor ? 'major' : '';
+                        const badgeClass = isMajor ? 'major' : 'other';
+                        const badgeText = isMajor ? 'MAJOR PROVIDER' : 'OTHER';
+                        
+                        // Calculate total requests for this provider
+                        const totalRequests = allRequestsData ? allRequestsData.total_requests : (providerData ? providerData.request_count : 0);
+                        const piiRequests = providerData ? providerData.request_count : 0;
+                        
+                        // Check if any findings are insecure or have privacy concerns
+                        let hasInsecureFindings = false;
+                        let hasTruePII = false;
+                        let hasTracking = false;
+                        
+                        if (providerData && providerData.domains) {
+                            for (const findings of Object.values(providerData.domains)) {
+                                for (const finding of findings) {
+                                    // Skip analytics findings in privacy section
+                                    if (finding.category === 'analytics') continue;
+                                    
+                                    if (finding.is_insecure) {
+                                        hasInsecureFindings = true;
+                                    }
+                                    if (finding.category === 'true_pii') {
+                                        hasTruePII = true;
+                                    }
+                                    if (finding.category === 'tracking') {
+                                        hasTracking = true;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        html += `<div class="provider-section ${providerClass}">`;
+                        html += `<div class="provider-header">${provider} <span class="badge ${badgeClass}">${badgeText}</span> <span class="request-count">(${totalRequests} requests`;
+                        if (piiRequests > 0) {
+                            html += `, ${piiRequests} with PII`;
+                        } else {
+                            html += `, no PII detected`;
+                        }
+                        html += `)</span></div>`;
+                        
+                        // Add simplified description (without analytics flag)
+                        html += getSimplifiedDescription(provider, piiRequests > 0, false, hasInsecureFindings, totalRequests, hasTruePII, hasTracking, false);
+                        
+                        // Show domains with PII findings (excluding analytics)
+                        if (providerData && providerData.domains) {
+                            for (const [domain, findings] of Object.entries(providerData.domains)) {
+                                // Filter out analytics findings
+                                const privacyFindings = findings.filter(f => f.category !== 'analytics');
+                                
+                                if (privacyFindings.length === 0) continue;
+                                
+                                html += `<div class="domain-subsection">`;
+                                html += `<div class="domain-name">${domain} <span style="color: #f44336; font-size: 14px;">⚠️ PII Detected</span></div>`;
+                                
+                                for (const finding of privacyFindings) {
+                                    const findingId = findingIdCounter++;
+                                    const insecureClass = finding.is_insecure ? 'insecure' : '';
+                                    const securityBadge = finding.is_insecure ? 
+                                        '<span class="badge insecure">🔓 INSECURE HTTP</span>' : 
+                                        '<span class="badge secure">🔒 HTTPS</span>';
+                                    
+                                    html += `<div class="data-item ${insecureClass}">`;
+                                    html += `<div class="data-type">📍 ${finding.type} ${securityBadge}</div>`;
+                                    html += `<div class="data-value">${escapeHtml(finding.value)}</div>`;
+                                    html += `<div class="url-info">Found in: ${finding.location}</div>`;
+                                    html += `<div class="url-info">Response Status: ${getStatusBadge(finding.response_status)} ${finding.response_status_text}</div>`;
+                                    html += `<div class="url-info">Response Size: ${formatBytes(finding.response_size)}</div>`;
+                                    html += `<div class="url-info">URL: ${escapeHtml(finding.url.substring(0, 100))}${finding.url.length > 100 ? '...' : ''}</div>`;
+                                    
+                                    html += `<button class="expand-btn" onclick="toggleHeaders(${findingId})">Show Request/Response Headers</button>`;
+                                    
+                                    html += `<div id="headers-${findingId}" class="headers-section">`;
+                                    
+                                    // Request Headers
+                                    html += `<div class="headers-title">📤 Request Headers:</div>`;
+                                    if (finding.request_headers && Object.keys(finding.request_headers).length > 0) {
+                                        for (const [name, value] of Object.entries(finding.request_headers)) {
+                                            html += `<div class="header-item"><span class="header-name">${escapeHtml(name)}:</span> <span class="header-value">${escapeHtml(value)}</span></div>`;
+                                        }
+                                    } else {
+                                        html += `<div class="header-item">No request headers available</div>`;
+                                    }
+                                    
+                                    // Response Headers
+                                    html += `<div class="headers-title" style="margin-top: 15px;">📥 Response Headers:</div>`;
+                                    if (finding.response_headers && Object.keys(finding.response_headers).length > 0) {
+                                        for (const [name, value] of Object.entries(finding.response_headers)) {
+                                            html += `<div class="header-item"><span class="header-name">${escapeHtml(name)}:</span> <span class="header-value">${escapeHtml(value)}</span></div>`;
+                                        }
+                                    } else {
+                                        html += `<div class="header-item">No response headers available</div>`;
+                                    }
+                                    
+                                    html += `</div>`; // Close headers-section
+                                    
+                                    html += `</div>`; // Close data-item
+                                }
+                                
+                                html += `</div>`; // Close domain-subsection
+                            }
+                        }
+                        
+                        // Show domains WITHOUT PII (from all_requests_by_provider)
+                        if (allRequestsData && allRequestsData.domains) {
+                            for (const [domain, requestCount] of Object.entries(allRequestsData.domains)) {
+                                // Skip if this domain already shown above with PII
+                                if (providerData && providerData.domains && providerData.domains[domain]) {
+                                    continue;
+                                }
+                                
+                                html += `<div class="domain-subsection" style="background-color: #f9f9f9;">`;
+                                html += `<div class="domain-name">${domain} <span style="color: #666; font-size: 14px;">✓ No PII detected (${requestCount} requests)</span></div>`;
+                                html += `<div style="padding: 10px; color: #666; font-size: 14px;">This domain received POST requests but no personal information was detected. Check UUID tracking section above for potential tracking identifiers.</div>`;
+                                html += `</div>`;
+                            }
+                        }
+                        
+                        html += `</div>`; // Close provider-section
+                    }
+                }
+                
+                // SECTION 2: ANALYTICS ACTIVITY (Low Risk)
+                if (sortedAnalyticsProviders.length > 0) {
+                    html += '<h3 style="color: #4CAF50; margin-top: 40px;">📈 Analytics & Performance Monitoring (Low Risk)</h3>';
+                    html += '<p style="color: #666; margin-bottom: 20px;">These are analytics and performance monitoring services. They collect technical data about page performance and user behavior but no personal information was detected.</p>';
+                    
+                    for (const provider of sortedAnalyticsProviders) {
+                        // Apply provider filter
+                        if (selectedProvider !== 'All' && selectedProvider !== provider) {
+                            continue;
+                        }
+                        
+                        const providerData = data.findings_by_provider ? data.findings_by_provider[provider] : null;
+                        const allRequestsData = data.all_requests_by_provider ? data.all_requests_by_provider[provider] : null;
+                        
+                        console.log(`Processing analytics provider: ${provider}`, {providerData, allRequestsData});
+                        
+                        const isMajor = majorProviders.includes(provider);
+                        const badgeClass = isMajor ? 'major' : 'other';
+                        const badgeText = isMajor ? 'MAJOR PROVIDER' : 'OTHER';
+                        
+                        const totalRequests = allRequestsData ? allRequestsData.total_requests : (providerData ? providerData.request_count : 0);
+                        
+                        html += `<div class="provider-section" style="border-color: #4CAF50; background-color: #f1f8f4;">`;
+                        html += `<div class="provider-header" style="color: #2e7d32;">${provider} <span class="badge ${badgeClass}">${badgeText}</span> <span class="request-count">(${totalRequests} requests, analytics only)</span></div>`;
+                        
+                        // Show analytics findings
+                        if (providerData && providerData.domains) {
+                            for (const [domain, findings] of Object.entries(providerData.domains)) {
+                                // Only show analytics findings
+                                const analyticsFindings = findings.filter(f => f.category === 'analytics');
+                                
+                                if (analyticsFindings.length === 0) continue;
+                                
+                                html += `<div class="domain-subsection" style="border-left-color: #4CAF50; background-color: white;">`;
+                                html += `<div class="domain-name" style="color: #2e7d32;">${domain} <span style="color: #4CAF50; font-size: 14px;">✓ Analytics Data</span></div>`;
+                                
+                                for (const finding of analyticsFindings) {
+                                    html += `<div class="data-item" style="border-left-color: #4CAF50;">`;
+                                    html += `<div class="data-type" style="color: #2e7d32;">📈 ${finding.type}</div>`;
+                                    html += `<div class="data-value">${escapeHtml(finding.value)}</div>`;
+                                    html += `<div class="url-info">Found in: ${finding.location}</div>`;
+                                    html += `<div class="url-info">Response Status: ${getStatusBadge(finding.response_status)} ${finding.response_status_text}</div>`;
+                                    html += `<div class="url-info">URL: ${escapeHtml(finding.url.substring(0, 100))}${finding.url.length > 100 ? '...' : ''}</div>`;
+                                    html += `<div style="margin-top: 10px; padding: 10px; background-color: #f1f8f4; border-radius: 4px; font-size: 13px; color: #666;">`;
+                                    html += `<strong>Note:</strong> This is standard analytics/performance monitoring data used for website optimization and user experience improvement. No personal identifying information detected.`;
+                                    html += `</div>`;
+                                    html += `</div>`; // Close data-item
+                                }
+                                
+                                html += `</div>`; // Close domain-subsection
+                            }
+                        }
+                        
+                        html += `</div>`; // Close provider-section
+                    }
+                }
+            }
+            
+            resultsDiv.innerHTML = html;
+
+        }
+        
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
