@@ -1,0 +1,1379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HAR Privacy Analyzer - Phase 1</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+        
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .upload-section {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            margin-bottom: 30px;
+        }
+        
+        .drop-zone {
+            border: 3px dashed #667eea;
+            border-radius: 20px;
+            padding: 60px 40px;
+            text-align: center;
+            background: #f8f9ff;
+            cursor: pointer;
+            transition: all 0.3s;
+            position: relative;
+        }
+        
+        .drop-zone.dragover {
+            background: #667eea;
+            color: white;
+            border-color: #764ba2;
+            transform: scale(1.02);
+        }
+        
+        .drop-zone:hover {
+            border-color: #764ba2;
+            background: #f0f1ff;
+        }
+        
+        .drop-zone-icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        
+        .drop-zone-title {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        
+        .drop-zone.dragover .drop-zone-title,
+        .drop-zone.dragover .drop-zone-subtitle,
+        .drop-zone.dragover .file-info {
+            color: white;
+        }
+        
+        .drop-zone-subtitle {
+            font-size: 16px;
+            color: #666;
+            margin-bottom: 20px;
+        }
+        
+        .file-info {
+            margin-top: 20px;
+            font-size: 14px;
+            color: #999;
+            line-height: 1.6;
+        }
+        
+        input[type="file"] {
+            display: none;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 60px 40px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        
+        .loading.show {
+            display: block;
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .loading-text {
+            font-size: 18px;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .loading-subtext {
+            font-size: 14px;
+            color: #666;
+        }
+        
+        .error-message {
+            background: #fee;
+            color: #c00;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid #c00;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .error-message.show {
+            display: block;
+        }
+        
+        .results {
+            display: none;
+        }
+        
+        .results.show {
+            display: block;
+        }
+        
+        .summary-card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+        
+        .summary-card h2 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 1.8em;
+        }
+        
+        .summary-card .session-info {
+            color: #666;
+            margin-bottom: 20px;
+            font-size: 1.1em;
+        }
+        
+        .alert-box {
+            background: #fff3cd;
+            border-left: 4px solid #ff9800;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        
+        .alert-box.critical {
+            background: #ffebee;
+            border-left-color: #d32f2f;
+            color: #d32f2f;
+            font-weight: 500;
+        }
+        
+        .alert-box.success {
+            background: #e8f5e9;
+            border-left-color: #4caf50;
+            color: #2e7d32;
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .stat {
+            text-align: center;
+            padding: 20px;
+            background: #f8f9ff;
+            border-radius: 8px;
+        }
+        
+        .stat-number {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #667eea;
+            display: block;
+        }
+        
+        .stat-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 5px;
+            display: block;
+        }
+        
+        .timeline-card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+        
+        .timeline-card h3 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+        
+        .timeline-entry {
+            display: grid;
+            grid-template-columns: 120px 1fr;
+            gap: 20px;
+            padding: 20px;
+            border-left: 3px solid #667eea;
+            margin-bottom: 15px;
+            background: #f8f9ff;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+        
+        .timeline-entry:hover {
+            background: #f0f1ff;
+            transform: translateX(5px);
+        }
+        
+        .timeline-time {
+            font-weight: 600;
+            color: #667eea;
+            font-size: 0.95em;
+        }
+        
+        .timeline-content strong {
+            display: block;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 1.1em;
+        }
+        
+        .captured-value {
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e0e0e0;
+            font-family: 'Courier New', monospace;
+            color: #d32f2f;
+            font-weight: 500;
+            margin: 8px 0;
+        }
+        
+        .timeline-note {
+            font-size: 0.9em;
+            color: #666;
+            font-style: italic;
+            margin-top: 8px;
+        }
+        
+        .actions {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-top: 20px;
+        }
+        
+        button {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button.secondary {
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        button.secondary:hover {
+            background: #e0e0e0;
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+        }
+        
+        .no-data {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+            font-size: 1.1em;
+        }
+        
+        .empty-state {
+            background: #e8f5e9;
+            border: 2px dashed #4caf50;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            margin: 20px 0;
+        }
+        
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+        
+        .empty-state-text {
+            color: #2e7d32;
+            font-size: 1.1em;
+            font-weight: 500;
+        }
+        
+        .repair-notification {
+            background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+            border: 2px solid #ff9800;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 20px;
+            box-shadow: 0 4px 12px rgba(255, 152, 0, 0.2);
+        }
+        
+        .repair-icon {
+            font-size: 48px;
+            flex-shrink: 0;
+        }
+        
+        .repair-content {
+            flex: 1;
+        }
+        
+        .repair-content h3 {
+            color: #e65100;
+            margin-bottom: 10px;
+            font-size: 1.3em;
+        }
+        
+        .repair-content p {
+            color: #555;
+            margin-bottom: 15px;
+            line-height: 1.6;
+        }
+        
+        .repair-stats {
+            background: rgba(255, 255, 255, 0.7);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border-left: 4px solid #ff9800;
+            line-height: 1.8;
+        }
+        
+        .repair-stats strong {
+            color: #e65100;
+            font-size: 1.1em;
+        }
+        
+        .repair-note {
+            font-size: 0.9em;
+            color: #666;
+            font-style: italic;
+            margin-top: 10px;
+        }
+        
+        .vendor-entry {
+            background: #f8f9ff;
+            border-left: 4px solid #667eea;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .vendor-header {
+            font-size: 1.1em;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .vendor-header.critical {
+            border-left-color: #d32f2f;
+        }
+        
+        .vendor-header.high {
+            border-left-color: #ff9800;
+        }
+        
+        .vendor-header.medium {
+            border-left-color: #ffc107;
+        }
+        
+        .vendor-count {
+            font-size: 0.9em;
+            color: #666;
+            font-weight: normal;
+        }
+        
+        .vendor-details {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #e0e0e0;
+        }
+        
+        .vendor-stat {
+            padding: 5px 0;
+            color: #555;
+            font-size: 0.95em;
+        }
+        
+        .vendor-stat.pii-found {
+            color: #d32f2f;
+            font-weight: 600;
+        }
+        
+        .pii-item {
+            background: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid #e0e0e0;
+            font-family: 'Courier New', monospace;
+            color: #d32f2f;
+            font-size: 0.9em;
+            margin: 5px 0;
+        }
+        
+        .first-party-card {
+            background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+            border-left: 4px solid #ff6f00;
+        }
+        
+        .first-party-warning {
+            background: rgba(255, 111, 0, 0.1);
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            color: #e65100;
+            font-size: 1.05em;
+        }
+        
+        .first-party-pii {
+            background: #fff3e0;
+            border-color: #ff9800;
+            color: #e65100;
+            font-weight: 600;
+        }
+        
+        .first-party-note {
+            margin-top: 15px;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.7);
+            border-radius: 6px;
+            font-size: 0.9em;
+            color: #666;
+            line-height: 1.6;
+        }
+        
+        .plaintext-fallback-notice {
+            background: #e3f2fd;
+            border: 2px solid #2196f3;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 15px;
+            color: #1565c0;
+            font-size: 0.95em;
+        }
+        
+        /* Enhanced PII Violation Cards */
+        .pii-violation-card {
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        
+        .pii-violation-header {
+            font-size: 1.1em;
+            margin-bottom: 12px;
+            color: #856404;
+        }
+        
+        .request-details {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            border-left: 4px solid #6c757d;
+        }
+        
+        .request-method {
+            font-family: 'Courier New', monospace;
+            font-size: 0.95em;
+            margin-bottom: 6px;
+            word-break: break-all;
+        }
+        
+        .method-post {
+            color: #0066cc;
+        }
+        
+        .method-get {
+            color: #28a745;
+        }
+        
+        .method-get strong {
+            color: #e67e22;
+        }
+        
+        .request-meta {
+            font-size: 0.9em;
+            color: #6c757d;
+        }
+        
+        .request-meta span {
+            margin-right: 10px;
+        }
+        
+        .pii-data {
+            margin: 12px 0;
+        }
+        
+        .pii-item-type {
+            font-weight: bold;
+            font-size: 1.05em;
+            margin-bottom: 6px;
+        }
+        
+        .pii-field {
+            font-size: 0.9em;
+            color: #6c757d;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .pii-note {
+            font-size: 0.85em;
+            color: #6c757d;
+            margin-top: 6px;
+            font-style: italic;
+        }
+        
+        .legal-summary {
+            background: #fff;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 12px 0;
+            border-left: 4px solid #dc3545;
+        }
+        
+        .legal-issue {
+            margin-bottom: 8px;
+            line-height: 1.5;
+        }
+        
+        .legal-damages {
+            color: #dc3545;
+            font-weight: 600;
+        }
+        
+        .expand-btn {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            margin: 10px 5px 10px 0;
+            transition: background 0.2s;
+        }
+        
+        .expand-btn:hover {
+            background: #0056b3;
+        }
+        
+        .view-all-btn {
+            background: #6c757d;
+        }
+        
+        .view-all-btn:hover {
+            background: #545b62;
+        }
+        
+        .expandable-section {
+            margin-top: 12px;
+            animation: slideDown 0.3s ease-out;
+        }
+        
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .legal-details {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 4px solid #dc3545;
+        }
+        
+        .legal-section {
+            margin-bottom: 12px;
+            line-height: 1.6;
+        }
+        
+        .legal-section strong {
+            display: inline-block;
+            min-width: 140px;
+            color: #495057;
+        }
+        
+        .legal-section ul {
+            margin-left: 140px;
+            margin-top: 6px;
+        }
+        
+        .legal-section li {
+            margin-bottom: 4px;
+        }
+        
+        .all-requests-list {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+        }
+        
+        .all-requests-list h4 {
+            margin-bottom: 15px;
+            color: #495057;
+        }
+        
+        .request-item {
+            background: white;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 10px;
+            display: flex;
+            gap: 12px;
+        }
+        
+        .request-item.has-pii {
+            border-left: 4px solid #dc3545;
+            background: #fff3cd;
+        }
+        
+        .request-item.no-pii {
+            border-left: 4px solid #28a745;
+        }
+        
+        .request-number {
+            font-weight: bold;
+            color: #6c757d;
+            min-width: 25px;
+        }
+        
+        .request-info {
+            flex: 1;
+        }
+        
+        .request-pii-flag {
+            color: #dc3545;
+            font-weight: 600;
+            font-size: 0.9em;
+            margin-top: 6px;
+        }
+        .leadid-capture-label {
+            background: #fff3cd;
+            border-left: 3px solid #ffc107;
+            padding: 5px 10px;
+            margin-bottom: 8px;
+            font-size: 0.88em;
+            color: #856404;
+            border-radius: 0 4px 4px 0;
+        }
+
+        /* ── Top Nav (shared style with bulk page) ── */
+        .topnav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 24px;
+            background: rgba(255,255,255,0.12);
+            backdrop-filter: blur(8px);
+            border-bottom: 1px solid rgba(255,255,255,0.15);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            margin: -20px -20px 20px -20px;
+        }
+
+        .topnav-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 700;
+            font-size: 0.95em;
+            color: white;
+        }
+
+        .topnav-icon {
+            width: 28px;
+            height: 28px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.95em;
+        }
+
+        .topnav-links {
+            display: flex;
+            gap: 4px;
+        }
+
+        .nav-link {
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 0.88em;
+            font-weight: 500;
+            text-decoration: none;
+            color: rgba(255,255,255,0.7);
+            transition: all 0.15s;
+            border: 1px solid transparent;
+        }
+
+        .nav-link:hover {
+            color: white;
+            background: rgba(255,255,255,0.12);
+        }
+
+        .nav-link.active {
+            color: white;
+            background: rgba(255,255,255,0.2);
+            border-color: rgba(255,255,255,0.3);
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="topnav">
+        <div class="topnav-brand">
+            <div class="topnav-icon">🔍</div>
+            HAR Privacy Analyzer
+        </div>
+        <div class="topnav-links">
+            <a href="/" class="nav-link active">Single File</a>
+            <a href="/bulk" class="nav-link">Bulk Ranker</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="header">
+            <h1>🔍 HAR Privacy Analyzer</h1>
+            <p>Phase 1: LeadID Detection</p>
+        </div>
+        
+        <div id="uploadSection" class="upload-section">
+            <div id="errorMessage" class="error-message"></div>
+            
+            <div id="dropZone" class="drop-zone">
+                <div class="drop-zone-icon">📁</div>
+                <div class="drop-zone-title">Drag & Drop HAR File Here</div>
+                <div class="drop-zone-subtitle">or click to browse</div>
+                <input type="file" id="fileInput" accept=".har">
+                <div class="file-info">
+                    ✓ Supports files up to 100 MB<br>
+                    ✓ .har files only<br>
+                    ✓ Your data stays private - analyzed locally
+                </div>
+            </div>
+        </div>
+        
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <div class="loading-text">Analyzing HAR file...</div>
+            <div class="loading-subtext">This may take a moment for large files</div>
+        </div>
+        
+        <div id="results" class="results"></div>
+    </div>
+    
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const uploadSection = document.getElementById('uploadSection');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        const errorMessage = document.getElementById('errorMessage');
+        
+        // Click to browse
+        dropZone.addEventListener('click', () => {
+            fileInput.click();
+        });
+        
+        // File selected via browse
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+        
+        // Drag and drop handlers
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+        
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+        
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            
+            if (e.dataTransfer.files.length > 0) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+        
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.classList.add('show');
+            setTimeout(() => {
+                errorMessage.classList.remove('show');
+            }, 5000);
+        }
+        
+        function handleFile(file) {
+            // Validate file type
+            if (!file.name.endsWith('.har')) {
+                showError('Please upload a .har file');
+                return;
+            }
+            
+            // Show file size
+            const sizeMB = (file.size / 1024 / 1024).toFixed(2);
+            console.log(`Uploading ${sizeMB} MB HAR file`);
+            
+            // Hide upload, show loading
+            uploadSection.style.display = 'none';
+            loading.classList.add('show');
+            results.classList.remove('show');
+            
+            // Upload and analyze
+            uploadFile(file);
+        }
+        
+        async function uploadFile(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                const response = await fetch('/analyze', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Analysis failed');
+                }
+                
+                displayResults(data);
+            } catch (error) {
+                console.error('Error:', error);
+                showError(`Error: ${error.message}`);
+                uploadSection.style.display = 'block';
+                loading.classList.remove('show');
+            }
+        }
+        
+        function displayResults(data) {
+            loading.classList.remove('show');
+            results.classList.add('show');
+            
+            let html = '';
+            
+            // Show repair notification if file was repaired
+            if (data.repair_used) {
+                html += '<div class="repair-notification">';
+                html += '<div class="repair-icon">🔧</div>';
+                html += '<div class="repair-content">';
+                html += '<h3>File Automatically Repaired</h3>';
+                html += '<p>Your HAR file had some corrupted sections that were automatically repaired.</p>';
+                html += '<div class="repair-stats">';
+                html += `<strong>${data.repair_stats.extracted}</strong> entries successfully extracted<br>`;
+                html += `<strong>${data.repair_stats.skipped}</strong> corrupted entries skipped<br>`;
+                html += `<strong>${data.repair_stats.success_rate.toFixed(1)}%</strong> success rate`;
+                html += '</div>';
+                html += '<p class="repair-note">Analysis is based on the repaired data. Some information may be missing from corrupted sections.</p>';
+                html += '</div>';
+                html += '</div>';
+            }
+            
+            // Summary card
+            html += '<div class="summary-card">';
+            html += `<h2>Analysis of: ${data.first_party}</h2>`;
+            html += `<div class="session-info">Session: ${data.session_date || 'Unknown'} at ${data.session_start || 'Unknown'}</div>`;
+            
+            // Show vendor detection summary
+            if (data.vendors_detected > 0) {
+                html += '<div class="alert-box critical">';
+                html += `🚨 ${data.vendors_detected} Third-Party Vendor${data.vendors_detected > 1 ? 's' : ''} Detected`;
+                html += '</div>';
+                
+                html += '<div class="stats">';
+                html += `<div class="stat">`;
+                html += `<span class="stat-number">${data.vendors_detected}</span>`;
+                html += `<span class="stat-label">Vendors Detected</span>`;
+                html += `</div>`;
+                html += `<div class="stat">`;
+                html += `<span class="stat-number">${data.pii_count}</span>`;
+                html += `<span class="stat-label">Personal Info Items Found</span>`;
+                html += `</div>`;
+                html += `<div class="stat">`;
+                html += `<span class="stat-number">${data.total_requests}</span>`;
+                html += `<span class="stat-label">Total Requests</span>`;
+                html += `</div>`;
+                html += '</div>';
+            } else {
+                html += '<div class="empty-state">';
+                html += '<div class="empty-state-icon">✓</div>';
+                html += '<div class="empty-state-text">No major third-party tracking detected in this HAR file</div>';
+                html += '</div>';
+                
+                html += '<div class="stats">';
+                html += `<div class="stat">`;
+                html += `<span class="stat-number">${data.total_requests}</span>`;
+                html += `<span class="stat-label">Total Requests</span>`;
+                html += `</div>`;
+                html += `<div class="stat">`;
+                html += `<span class="stat-number">${data.post_requests}</span>`;
+                html += `<span class="stat-label">POST Requests</span>`;
+                html += `</div>`;
+                html += '</div>';
+            }
+            
+            html += '</div>';
+            
+            // First-party PII collection card (NEW!)
+            if (data.first_party_pii && data.first_party_pii.pii_count > 0) {
+                html += '<div class="timeline-card first-party-card">';
+                html += '<h3>🏢 First-Party Data Collection</h3>';
+
+                // Parsing method notice
+                if (data.first_party_pii.method === 'hybrid') {
+                    html += '<div class="plaintext-fallback-notice">🔍 <strong>Hybrid Analysis:</strong> ';
+                    html += `${data.first_party_pii.structured_count} item${data.first_party_pii.structured_count !== 1 ? 's' : ''} from parsed requests + `;
+                    html += `${data.first_party_pii.plaintext_count} item${data.first_party_pii.plaintext_count !== 1 ? 's' : ''} from plaintext scan of corrupted sections</div>`;
+                } else if (data.first_party_pii.method === 'plaintext_fallback') {
+                    html += '<div class="plaintext-fallback-notice">🔍 <strong>Plaintext Scan Used:</strong> File was partially corrupted — PII found via raw text search. Request-level details (URL, timestamp) unavailable for these items.</div>';
+                }
+
+                html += '<div class="first-party-warning">';
+                html += `<strong>${data.first_party}</strong> collected your personal information directly.`;
+                html += ' This is expected — you submitted it to the website. What matters is what happens next.';
+                html += '</div>';
+
+                html += `<div class="vendor-stat pii-found" style="margin: 12px 0;">🚨 ${data.first_party_pii.pii_count} PII item${data.first_party_pii.pii_count !== 1 ? 's' : ''} collected</div>`;
+
+                // Group: structured (have url) vs fallback (plaintext scan only)
+                const structuredItems = (data.first_party_pii.pii_items || []).filter(p => p.source !== 'fallback' && p.url);
+                const fallbackItems   = (data.first_party_pii.pii_items || []).filter(p => p.source === 'fallback' || !p.url);
+
+                // Structured items grouped by request URL
+                if (structuredItems.length > 0) {
+                    const byUrl = {};
+                    structuredItems.forEach(p => {
+                        const k = p.url || 'unknown';
+                        if (!byUrl[k]) byUrl[k] = { url: p.url, timestamp: p.timestamp, items: [] };
+                        byUrl[k].items.push(p);
+                    });
+
+                    Object.values(byUrl).forEach(group => {
+                        html += '<div class="pii-violation-card" style="border-color:#28a745;background:#f0fff4;">';
+                        html += '<div class="pii-violation-header" style="color:#155724;">🟢 DIRECT FORM SUBMISSION</div>';
+
+                        html += '<div class="request-details">';
+                        html += `<div class="request-method method-post"><strong>POST</strong> ${escapeHtml(group.url || '')}</div>`;
+                        if (group.timestamp) {
+                            const ts = new Date(group.timestamp);
+                            const timeStr = ts.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })
+                                          + '.' + String(ts.getMilliseconds()).padStart(3, '0');
+                            html += `<div class="request-meta">${timeStr} UTC</div>`;
+                        }
+                        html += '</div>';
+
+                        html += '<div class="pii-data">';
+                        group.items.forEach(p => {
+                            html += `<div class="pii-item-type">📋 ${escapeHtml(p.type)}: ${escapeHtml(p.value)}</div>`;
+                        });
+                        html += '</div>';
+
+                        html += '<div class="legal-summary" style="border-left-color:#28a745;">';
+                        html += '<div class="legal-issue">✅ <strong>Expected behavior</strong> — you submitted this information directly to the website.</div>';
+                        html += '<div style="color:#6c757d;font-size:0.9em;margin-top:6px;">The concern is whether this data was then shared with third parties without your consent.</div>';
+                        html += '</div>';
+                        html += '</div>';
+                    });
+                }
+
+                // Fallback items — no request context available
+                if (fallbackItems.length > 0) {
+                    const seen = new Set();
+                    const deduped = fallbackItems.filter(p => {
+                        const k = `${p.type}:${p.value}`;
+                        if (seen.has(k)) return false;
+                        seen.add(k); return true;
+                    });
+
+                    html += '<div class="pii-violation-card" style="border-color:#ffc107;background:#fffdf0;">';
+                    html += '<div class="pii-violation-header" style="color:#856404;">🔍 PLAINTEXT SCAN RESULTS</div>';
+
+                    html += '<div class="request-details" style="border-left-color:#ffc107;">';
+                    html += '<div class="request-method" style="color:#856404;">Source: Raw text scan of corrupted file sections</div>';
+                    html += '<div class="request-meta">No request-level URL or timestamp available for these items</div>';
+                    html += '</div>';
+
+                    html += '<div class="pii-data">';
+                    deduped.forEach(p => {
+                        html += `<div class="pii-item-type">📋 ${escapeHtml(p.type)}: ${escapeHtml(p.value)}</div>`;
+                    });
+                    html += '</div>';
+
+                    html += '<div class="legal-summary" style="border-left-color:#ffc107;">';
+                    html += '<div class="legal-issue">⚠️ PII confirmed in the HAR file but surrounding request structure was corrupted. Values are real but cannot be attributed to a specific URL or timestamp.</div>';
+                    html += '</div>';
+                    html += '</div>';
+                }
+
+                html += '</div>'; // close first-party-card
+            }
+
+                        // Vendors card
+            if (data.vendors_detected > 0) {
+                html += '<div class="timeline-card">';
+                html += '<h3>Detected Vendors</h3>';
+                
+                // Sort vendors by risk level
+                const vendorEntries = Object.entries(data.vendors);
+                const riskOrder = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3};
+                vendorEntries.sort((a, b) => riskOrder[a[1].risk] - riskOrder[b[1].risk]);
+                
+                vendorEntries.forEach(([key, vendor]) => {
+                    const riskClass = vendor.risk;
+                    const riskEmoji = vendor.risk === 'critical' ? '🔴' : vendor.risk === 'high' ? '🟠' : '🟡';
+                    
+                    html += '<div class="vendor-entry">';
+                    html += `<div class="vendor-header ${riskClass}">`;
+                    html += `${riskEmoji} <strong>${vendor.name}</strong>`;
+                    html += `<span class="vendor-count">${vendor.request_count} request${vendor.request_count > 1 ? 's' : ''}</span>`;
+                    html += '</div>';
+                    html += '<div class="vendor-details">';
+                    
+                    if (vendor.pii_count > 0) {
+                        html += `<div class="vendor-stat pii-found">🚨 ${vendor.pii_count} PII item${vendor.pii_count > 1 ? 's' : ''} detected</div>`;
+                        
+                        // Show each PII item with enhanced details
+                        vendor.pii.forEach((pii, index) => {
+                            const isHashed = pii.type.includes('Hashed');
+                            const severityEmoji = pii.legal_context?.severity === 'critical' ? '🔴' : 
+                                                 pii.legal_context?.severity === 'high' ? '🟠' : '🟡';
+                            
+                            html += '<div class="pii-violation-card">';
+                            
+                            // Header with severity
+                            html += '<div class="pii-violation-header">';
+                            html += `${severityEmoji} <strong>${isHashed ? 'HASHED PII' : 'PLAINTEXT PII'} VIOLATION</strong>`;
+                            html += '</div>';
+                            
+                            // Request details
+                            if (pii.request_details) {
+                                const rd = pii.request_details;
+                                const method = rd.method || 'UNKNOWN';
+                                const methodClass = method === 'GET' ? 'method-get' : 'method-post';
+                                const getWarning = method === 'GET' ? ' ⚠️' : '';
+                                
+                                html += '<div class="request-details">';
+                                html += `<div class="request-method ${methodClass}"><strong>${method}${getWarning}</strong> ${escapeHtml(rd.full_url || pii.url)}</div>`;
+                                
+                                // Format timestamp
+                                const timestamp = new Date(pii.timestamp);
+                                const timeStr = timestamp.toLocaleTimeString('en-US', { 
+                                    hour: '2-digit', 
+                                    minute: '2-digit', 
+                                    second: '2-digit',
+                                    hour12: true 
+                                }) + '.' + String(timestamp.getMilliseconds()).padStart(3, '0');
+                                
+                                html += '<div class="request-meta">';
+                                html += `<span>${timeStr} UTC</span>`;
+                                html += ` • <span>Response: ${rd.response_code || 'N/A'}</span>`;
+                                if (rd.response_time_ms) {
+                                    html += ` • <span>${rd.response_time_ms}ms</span>`;
+                                }
+                                html += '</div>';
+                                html += '</div>';
+                            }
+                            
+                            // PII data
+                            html += '<div class="pii-data">';
+
+                            // LeadID: add capture-context label based on field type
+                            if (key === 'leadid') {
+                                const captureLabels = {
+                                    'Zip Code': '📍 Pre-submission capture — collected before form was submitted',
+                                    'First Name': '⏱️ Real-time capture — intercepted as user typed',
+                                    'Last Name': '⏱️ Real-time capture — intercepted as user typed',
+                                    'Email': '⏱️ Real-time capture — intercepted as user typed',
+                                    'Phone': '⏱️ Real-time capture — intercepted as user typed',
+                                };
+                                const label = captureLabels[pii.type];
+                                if (label) {
+                                    html += `<div class="leadid-capture-label">${label}</div>`;
+                                }
+                            }
+
+                            html += `<div class="pii-item-type">${escapeHtml(pii.type)}: ${escapeHtml(pii.value)}</div>`;
+                            if (pii.field) {
+                                html += `<div class="pii-field">Field: ${escapeHtml(pii.field)}</div>`;
+                            }
+                            if (pii.note) {
+                                html += `<div class="pii-note">${escapeHtml(pii.note)}</div>`;
+                            }
+                            html += '</div>';
+                            
+                            // Legal context (inline summary)
+                            if (pii.legal_context) {
+                                const lc = pii.legal_context;
+                                html += '<div class="legal-summary">';
+                                html += `<div class="legal-issue">⚖️ <strong>Issue:</strong> ${escapeHtml(lc.what_happened)}</div>`;
+                                html += `<div class="legal-damages">💰 <strong>Estimated Damages:</strong> $${lc.estimated_damages.toLocaleString()}</div>`;
+                                html += '</div>';
+                                
+                                // Expandable legal details
+                                const detailId = `legal-${key}-${index}`;
+                                html += `<button class="expand-btn" onclick="toggleExpand('${detailId}')">View Legal Details ▼</button>`;
+                                html += `<div id="${detailId}" class="expandable-section" style="display:none;">`;
+                                html += '<div class="legal-details">';
+                                html += `<div class="legal-section"><strong>Severity:</strong> ${lc.severity.toUpperCase()}</div>`;
+                                html += `<div class="legal-section"><strong>Violation Type:</strong> ${lc.violation_type.replace(/_/g, ' ')}</div>`;
+                                html += `<div class="legal-section"><strong>Why It Matters:</strong> ${escapeHtml(lc.why_matters)}</div>`;
+                                
+                                if (lc.cipa_elements && lc.cipa_elements.length > 0) {
+                                    html += '<div class="legal-section"><strong>CIPA Elements:</strong>';
+                                    html += '<ul>';
+                                    lc.cipa_elements.forEach(el => {
+                                        html += `<li>✓ ${el.replace(/_/g, ' ')}</li>`;
+                                    });
+                                    html += '</ul></div>';
+                                }
+                                
+                                html += `<div class="legal-section"><strong>Evidence Strength:</strong> ${lc.evidence_strength}</div>`;
+                                html += '</div>';
+                                html += '</div>';
+                            }
+                            
+                            html += '</div>'; // Close pii-violation-card
+                        });
+                        
+                        // Add "View All Requests" button if vendor has multiple requests
+                        if (vendor.all_requests && vendor.all_requests.length > 1) {
+                            const requestsId = `requests-${key}`;
+                            html += `<button class="expand-btn view-all-btn" onclick="toggleExpand('${requestsId}')">View All ${vendor.all_requests.length} Requests ▼</button>`;
+                            html += `<div id="${requestsId}" class="expandable-section" style="display:none;">`;
+                            html += '<div class="all-requests-list">';
+                            html += '<h4>All Requests</h4>';
+                            
+                            vendor.all_requests.forEach((req, idx) => {
+                                const hasPiiClass = req.has_pii ? 'has-pii' : 'no-pii';
+                                const piiIcon = req.has_pii ? '🔴' : '⚪';
+                                const methodClass = req.method === 'GET' ? 'method-get' : 'method-post';
+                                
+                                html += `<div class="request-item ${hasPiiClass}">`;
+                                html += `<div class="request-number">${idx + 1}.</div>`;
+                                html += '<div class="request-info">';
+                                html += `<div class="request-method ${methodClass}">${piiIcon} <strong>${req.method}</strong> ${escapeHtml(req.url)}</div>`;
+                                
+                                const reqTime = new Date(req.timestamp);
+                                const reqTimeStr = reqTime.toLocaleTimeString('en-US', { 
+                                    hour: '2-digit', 
+                                    minute: '2-digit', 
+                                    second: '2-digit',
+                                    hour12: true 
+                                }) + '.' + String(reqTime.getMilliseconds()).padStart(3, '0');
+                                
+                                html += '<div class="request-meta">';
+                                html += `${reqTimeStr} UTC • ${req.response_code || 'N/A'}`;
+                                if (req.response_time_ms) {
+                                    html += ` • ${req.response_time_ms}ms`;
+                                }
+                                html += '</div>';
+                                
+                                if (req.has_pii) {
+                                    html += '<div class="request-pii-flag">⚠️ Contains PII</div>';
+                                }
+                                
+                                html += '</div>';
+                                html += '</div>';
+                            });
+                            
+                            html += '</div>';
+                            html += '</div>';
+                        }
+                        
+                    } else {
+                        html += `<div class="vendor-stat">POST requests: ${vendor.post_count}</div>`;
+                        html += `<div class="vendor-stat">No PII detected in visible requests</div>`;
+                        
+                        // Still show "View All Requests" even without PII
+                        if (vendor.all_requests && vendor.all_requests.length > 0) {
+                            const requestsId = `requests-${key}`;
+                            html += `<button class="expand-btn view-all-btn" onclick="toggleExpand('${requestsId}')">View All ${vendor.all_requests.length} Requests ▼</button>`;
+                            html += `<div id="${requestsId}" class="expandable-section" style="display:none;">`;
+                            html += '<div class="all-requests-list">';
+                            html += '<h4>All Requests</h4>';
+                            
+                            vendor.all_requests.forEach((req, idx) => {
+                                const methodClass = req.method === 'GET' ? 'method-get' : 'method-post';
+                                
+                                html += '<div class="request-item no-pii">';
+                                html += `<div class="request-number">${idx + 1}.</div>`;
+                                html += '<div class="request-info">';
+                                html += `<div class="request-method ${methodClass}">⚪ <strong>${req.method}</strong> ${escapeHtml(req.url)}</div>`;
+                                
+                                const reqTime = new Date(req.timestamp);
+                                const reqTimeStr = reqTime.toLocaleTimeString('en-US', { 
+                                    hour: '2-digit', 
+                                    minute: '2-digit', 
+                                    second: '2-digit',
+                                    hour12: true 
+                                }) + '.' + String(reqTime.getMilliseconds()).padStart(3, '0');
+                                
+                                html += '<div class="request-meta">';
+                                html += `${reqTimeStr} UTC • ${req.response_code || 'N/A'}`;
+                                if (req.response_time_ms) {
+                                    html += ` • ${req.response_time_ms}ms`;
+                                }
+                                html += '</div>';
+                                html += '</div>';
+                                html += '</div>';
+                            });
+                            
+                            html += '</div>';
+                            html += '</div>';
+                        }
+                    }
+                    
+                    html += '</div>';
+                    html += '</div>';
+                });
+                
+                html += '</div>';
+            }
+            
+            // LeadID timeline is now shown inline in the Vendors section above
+                        // Actions
+            html += '<div class="summary-card">';
+            html += '<div class="actions">';
+            html += '<button onclick="copyTimeline()">📋 Copy Data</button>';
+            html += '<button onclick="analyzeAnother()" class="secondary">📁 Analyze Another File</button>';
+            html += '</div>';
+            html += '</div>';
+            
+            results.innerHTML = html;
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function toggleExpand(elementId) {
+            const element = document.getElementById(elementId);
+            const button = event.target;
+            
+            if (element.style.display === 'none') {
+                element.style.display = 'block';
+                button.textContent = button.textContent.replace('▼', '▲');
+            } else {
+                element.style.display = 'none';
+                button.textContent = button.textContent.replace('▲', '▼');
+            }
+        }
+
+        function copyTimeline() {
+            const timelineEntries = document.querySelectorAll('.timeline-entry');
+            let text = 'LeadID Captures:\n\n';
+            
+            timelineEntries.forEach(entry => {
+                const time = entry.querySelector('.timeline-time').textContent;
+                const type = entry.querySelector('strong').textContent;
+                const value = entry.querySelector('.captured-value').textContent;
+                text += `${time} - ${type}: ${value}\n`;
+            });
+            
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Timeline copied to clipboard!');
+            });
+        }
+        
+        function analyzeAnother() {
+            uploadSection.style.display = 'block';
+            results.classList.remove('show');
+            fileInput.value = '';
+        }
+    </script>
+</body>
+</html>

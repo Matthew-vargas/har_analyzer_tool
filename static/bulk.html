@@ -1,0 +1,1562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HAR Bulk Ranker — Privacy Risk Analysis</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg:           #0f1117;
+            --surface:      #181c27;
+            --surface-2:    #1f2436;
+            --border:       #2a3050;
+            --border-light: #343d5c;
+            --purple:       #7c6ff7;
+            --purple-dim:   #4a4480;
+            --purple-glow:  rgba(124, 111, 247, 0.15);
+            --red:          #e05c5c;
+            --orange:       #e08a3c;
+            --yellow:       #d4b84a;
+            --green:        #4caf7d;
+            --text:         #e2e6f3;
+            --text-dim:     #8892b0;
+            --text-faint:   #4a5578;
+            --mono:         'IBM Plex Mono', monospace;
+            --sans:         'IBM Plex Sans', sans-serif;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: var(--sans);
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 0;
+        }
+
+        /* ── TOP NAV ─────────────────────────────────────────── */
+        .topnav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 32px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .topnav-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-family: var(--mono);
+            font-weight: 600;
+            font-size: 0.95em;
+            color: var(--purple);
+            text-decoration: none;
+        }
+
+        .topnav-brand .icon {
+            width: 30px;
+            height: 30px;
+            background: var(--purple);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1em;
+        }
+
+        .topnav-links {
+            display: flex;
+            gap: 4px;
+        }
+
+        .nav-link {
+            padding: 7px 16px;
+            border-radius: 6px;
+            font-size: 0.88em;
+            font-weight: 500;
+            text-decoration: none;
+            color: var(--text-dim);
+            transition: all 0.15s;
+            border: 1px solid transparent;
+        }
+
+        .nav-link:hover {
+            color: var(--text);
+            background: var(--surface-2);
+        }
+
+        .nav-link.active {
+            color: var(--purple);
+            background: var(--purple-glow);
+            border-color: var(--purple-dim);
+        }
+
+        /* ── PAGE LAYOUT ─────────────────────────────────────── */
+        .page {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 48px 24px 80px;
+        }
+
+        .page-header {
+            margin-bottom: 40px;
+        }
+
+        .page-header .eyebrow {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            font-weight: 600;
+            color: var(--purple);
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .page-header h1 {
+            font-size: 2em;
+            font-weight: 700;
+            color: var(--text);
+            line-height: 1.2;
+            margin-bottom: 12px;
+        }
+
+        .page-header p {
+            font-size: 1em;
+            color: var(--text-dim);
+            line-height: 1.65;
+            max-width: 600px;
+        }
+
+        /* ── CARDS ───────────────────────────────────────────── */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 28px;
+            margin-bottom: 20px;
+        }
+
+        .card-title {
+            font-family: var(--mono);
+            font-size: 0.8em;
+            font-weight: 600;
+            color: var(--text-dim);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-title::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--border);
+        }
+
+        /* ── DROP ZONE ───────────────────────────────────────── */
+        .drop-zone {
+            border: 2px dashed var(--border-light);
+            border-radius: 10px;
+            padding: 48px 32px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: var(--surface-2);
+            position: relative;
+        }
+
+        .drop-zone:hover,
+        .drop-zone.dragover {
+            border-color: var(--purple);
+            background: var(--purple-glow);
+        }
+
+        .drop-zone input[type="file"] {
+            position: absolute;
+            inset: 0;
+            opacity: 0;
+            cursor: pointer;
+            width: 100%;
+            height: 100%;
+        }
+
+        .drop-icon {
+            font-size: 2.5em;
+            margin-bottom: 14px;
+            opacity: 0.7;
+        }
+
+        .drop-title {
+            font-size: 1.05em;
+            font-weight: 600;
+            color: var(--text);
+            margin-bottom: 6px;
+        }
+
+        .drop-sub {
+            font-size: 0.88em;
+            color: var(--text-dim);
+            margin-bottom: 16px;
+        }
+
+        .drop-limits {
+            display: inline-flex;
+            gap: 20px;
+            font-family: var(--mono);
+            font-size: 0.78em;
+            color: var(--text-faint);
+            border: 1px solid var(--border);
+            padding: 7px 16px;
+            border-radius: 20px;
+            background: var(--surface);
+        }
+
+        .drop-limits span {
+            color: var(--purple);
+        }
+
+        /* ── FILE LIST ───────────────────────────────────────── */
+        .file-list {
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .file-item {
+            display: grid;
+            grid-template-columns: 28px 1fr auto auto;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            transition: border-color 0.15s;
+        }
+
+        .file-item.valid {
+            border-left: 3px solid var(--green);
+        }
+
+        .file-item.invalid {
+            border-left: 3px solid var(--red);
+        }
+
+        .file-item .file-icon {
+            font-size: 1.1em;
+            text-align: center;
+        }
+
+        .file-item .file-name {
+            font-family: var(--mono);
+            font-size: 0.85em;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .file-item .file-size {
+            font-family: var(--mono);
+            font-size: 0.78em;
+            color: var(--text-dim);
+            white-space: nowrap;
+        }
+
+        .file-item .file-status {
+            font-size: 0.78em;
+            font-weight: 500;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .file-item .file-status.ok    { color: var(--green); }
+        .file-item .file-status.warn  { color: var(--yellow); }
+        .file-item .file-status.error { color: var(--red); }
+
+        .remove-btn {
+            background: none;
+            border: none;
+            color: var(--text-faint);
+            cursor: pointer;
+            font-size: 1em;
+            padding: 2px 6px;
+            border-radius: 4px;
+            transition: all 0.15s;
+            line-height: 1;
+        }
+
+        .remove-btn:hover {
+            color: var(--red);
+            background: rgba(224, 92, 92, 0.1);
+        }
+
+        /* ── LIMITS BAR ──────────────────────────────────────── */
+        .limits-bar {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-top: 16px;
+            padding: 12px 16px;
+            background: var(--surface-2);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            font-size: 0.85em;
+        }
+
+        .limits-bar .slot-counter {
+            font-family: var(--mono);
+            font-weight: 600;
+        }
+
+        .slot-pips {
+            display: flex;
+            gap: 5px;
+        }
+
+        .slot-pip {
+            width: 24px;
+            height: 8px;
+            border-radius: 3px;
+            background: var(--border);
+            transition: background 0.2s;
+        }
+
+        .slot-pip.filled    { background: var(--purple); }
+        .slot-pip.over      { background: var(--red); }
+
+        .limits-bar .hint {
+            color: var(--text-faint);
+            font-size: 0.9em;
+            margin-left: auto;
+        }
+
+        /* ── ACTIONS ─────────────────────────────────────────── */
+        .actions-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 24px;
+        }
+
+        .btn-primary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 28px;
+            background: var(--purple);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-family: var(--sans);
+            font-size: 0.95em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: #9589ff;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px rgba(124, 111, 247, 0.4);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 20px;
+            background: transparent;
+            color: var(--text-dim);
+            border: 1px solid var(--border-light);
+            border-radius: 8px;
+            font-family: var(--sans);
+            font-size: 0.9em;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .btn-secondary:hover {
+            color: var(--text);
+            border-color: var(--text-dim);
+        }
+
+        .action-hint {
+            font-size: 0.83em;
+            color: var(--text-faint);
+            margin-left: auto;
+        }
+
+        /* ── HOW IT WORKS ────────────────────────────────────── */
+        .steps-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+
+        .step-item {
+            padding: 20px;
+            background: var(--surface-2);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .step-num {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            font-weight: 600;
+            color: var(--purple);
+            margin-bottom: 10px;
+        }
+
+        .step-title {
+            font-weight: 600;
+            font-size: 0.95em;
+            margin-bottom: 6px;
+        }
+
+        .step-desc {
+            font-size: 0.83em;
+            color: var(--text-dim);
+            line-height: 1.55;
+        }
+
+        /* ── SCORING LEGEND ──────────────────────────────────── */
+        .score-legend {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 14px;
+            background: var(--surface-2);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .legend-badge {
+            font-family: var(--mono);
+            font-size: 0.78em;
+            font-weight: 600;
+            padding: 3px 9px;
+            border-radius: 4px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .legend-badge.critical { background: rgba(224,92,92,0.15);  color: var(--red);    border: 1px solid rgba(224,92,92,0.3); }
+        .legend-badge.high     { background: rgba(224,138,60,0.15); color: var(--orange); border: 1px solid rgba(224,138,60,0.3); }
+        .legend-badge.elevated { background: rgba(212,184,74,0.15); color: var(--yellow); border: 1px solid rgba(212,184,74,0.3); }
+        .legend-badge.lower    { background: rgba(76,175,125,0.15); color: var(--green);  border: 1px solid rgba(76,175,125,0.3); }
+
+        .legend-text .range {
+            font-family: var(--mono);
+            font-size: 0.82em;
+            font-weight: 600;
+            margin-bottom: 3px;
+        }
+
+        .legend-text .desc {
+            font-size: 0.8em;
+            color: var(--text-dim);
+            line-height: 1.45;
+        }
+
+        /* ── RESULTS PLACEHOLDER ─────────────────────────────── */
+        #resultsSection {
+            display: none;
+        }
+
+        .results-placeholder {
+            padding: 60px 32px;
+            text-align: center;
+            border: 1px dashed var(--border-light);
+            border-radius: 10px;
+            background: var(--surface-2);
+        }
+
+        .results-placeholder .ph-icon {
+            font-size: 2.5em;
+            margin-bottom: 14px;
+            opacity: 0.4;
+        }
+
+        .results-placeholder p {
+            color: var(--text-faint);
+            font-size: 0.9em;
+        }
+
+        /* ── EMPTY STATE ─────────────────────────────────────── */
+        #fileListEmpty {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 16px;
+            background: var(--surface-2);
+            border: 1px dashed var(--border);
+            border-radius: 8px;
+            color: var(--text-faint);
+            font-size: 0.85em;
+            margin-top: 16px;
+        }
+
+
+        /* ── PROGRESS ────────────────────────────────────────── */
+        .progress-container {
+            padding: 8px 0;
+        }
+
+        .progress-eyebrow {
+            font-family: var(--mono);
+            font-size: 0.72em;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--purple);
+            margin-bottom: 8px;
+        }
+
+        .progress-title {
+            font-size: 1.15em;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+
+        .progress-sub {
+            font-size: 0.85em;
+            color: var(--text-dim);
+            margin-bottom: 24px;
+        }
+
+        .progress-track {
+            height: 6px;
+            background: var(--border);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--purple), #9589ff);
+            border-radius: 3px;
+            width: 0%;
+            transition: width 0.5s ease;
+        }
+
+        .progress-label {
+            font-family: var(--mono);
+            font-size: 0.78em;
+            color: var(--text-dim);
+            margin-bottom: 24px;
+        }
+
+        .file-progress-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .fp-item {
+            display: grid;
+            grid-template-columns: 24px 1fr auto;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            transition: border-color 0.2s;
+        }
+
+        .fp-item.active  { border-color: var(--purple); }
+        .fp-item.done    { border-color: var(--green); }
+        .fp-item.failed  { border-color: var(--red); }
+
+        .fp-icon { font-size: 1em; text-align: center; }
+        .fp-name {
+            font-family: var(--mono);
+            font-size: 0.82em;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .fp-status {
+            font-size: 0.78em;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .fp-status.waiting  { color: var(--text-faint); }
+        .fp-status.scanning { color: var(--purple); }
+        .fp-status.done     { color: var(--green); }
+        .fp-status.failed   { color: var(--red); }
+
+        /* ── COMPLETION ──────────────────────────────────────── */
+        .completion-container {
+            padding: 4px 0;
+        }
+
+        .completion-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 24px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .completion-icon {
+            font-size: 2em;
+            line-height: 1;
+        }
+
+        .completion-title {
+            font-size: 1.2em;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+
+        .completion-sub {
+            font-size: 0.87em;
+            color: var(--text-dim);
+        }
+
+        .completion-files {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+
+        .completion-file-row {
+            display: grid;
+            grid-template-columns: 24px 1fr auto;
+            align-items: start;
+            gap: 12px;
+            padding: 14px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--surface-2);
+        }
+
+        .completion-file-row.success { border-left: 3px solid var(--green); }
+        .completion-file-row.error   { border-left: 3px solid var(--red);   }
+
+        .cf-icon { font-size: 1em; padding-top: 1px; }
+
+        .cf-name {
+            font-family: var(--mono);
+            font-size: 0.85em;
+            color: var(--text);
+            word-break: break-all;
+            line-height: 1.4;
+        }
+
+        .cf-stats {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 6px;
+            align-items: center;
+        }
+
+        .cf-stat {
+            font-size: 0.8em;
+            color: var(--text-dim);
+        }
+
+        .cf-stat strong { color: var(--text); }
+        .cf-stat.highlight strong { color: var(--orange); }
+
+        .cf-detail {
+            font-size: 0.8em;
+            color: var(--text-dim);
+            padding-top: 2px;
+        }
+
+        .cf-detail.error-text { color: var(--red); }
+
+        .cf-badge {
+            font-family: var(--mono);
+            font-size: 0.72em;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 4px;
+        }
+
+        .cf-badge.leadid {
+            background: rgba(224,138,60,0.15);
+            color: var(--orange);
+            border: 1px solid rgba(224,138,60,0.3);
+        }
+
+        .cf-badge.repair {
+            background: rgba(124,111,247,0.15);
+            color: var(--purple);
+            border: 1px solid rgba(124,111,247,0.3);
+        }
+
+        .completion-note {
+            padding: 14px 16px;
+            background: var(--purple-glow);
+            border: 1px solid var(--purple-dim);
+            border-radius: 8px;
+            font-size: 0.85em;
+            color: var(--text-dim);
+            font-style: italic;
+        }
+
+        /* ── ERROR STATE ─────────────────────────────────────── */
+        .error-container {
+            text-align: center;
+            padding: 40px 20px;
+        }
+
+        .err-icon  { font-size: 2em; margin-bottom: 12px; }
+        .err-title { font-size: 1.1em; font-weight: 700; color: var(--red); margin-bottom: 8px; }
+        .err-msg   { font-family: var(--mono); font-size: 0.85em; color: var(--text-dim); margin-bottom: 12px; }
+        .err-hint  { font-size: 0.83em; color: var(--text-faint); }
+
+
+        /* ── RANKED HEADER ───────────────────────────────────── */
+        .ranked-header {
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        .ranked-title {
+            font-size: 1.15em;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+        .ranked-sub {
+            font-size: 0.85em;
+            color: var(--text-dim);
+        }
+
+        /* ── SCORE CARDS ─────────────────────────────────────── */
+        .score-cards-list {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .score-card {
+            position: relative;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            transition: border-color 0.2s;
+        }
+
+        .score-card.grade-critical { border-left: 4px solid var(--red);    }
+        .score-card.grade-high     { border-left: 4px solid var(--orange);  }
+        .score-card.grade-elevated { border-left: 4px solid var(--yellow);  }
+        .score-card.grade-lower    { border-left: 4px solid var(--green);   }
+
+        .sc-rank-badge {
+            position: absolute;
+            top: 16px;
+            right: 18px;
+            font-size: 1.4em;
+            line-height: 1;
+        }
+
+        /* ── TOP ROW: gauge + identity ───────────────────────── */
+        .sc-top {
+            display: flex;
+            gap: 24px;
+            align-items: flex-start;
+            margin-bottom: 20px;
+        }
+
+        .sc-gauge-wrap {
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .sc-gauge {
+            width: 120px;
+            height: 88px;
+            overflow: hidden;
+            display: block;
+        }
+
+        .sc-grade-badge {
+            font-family: var(--mono);
+            font-size: 0.72em;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            padding: 3px 10px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .sc-grade-badge.grade-critical { background: rgba(224,92,92,0.15);  color: var(--red);    border: 1px solid rgba(224,92,92,0.35); }
+        .sc-grade-badge.grade-high     { background: rgba(224,138,60,0.15); color: var(--orange); border: 1px solid rgba(224,138,60,0.35); }
+        .sc-grade-badge.grade-elevated { background: rgba(212,184,74,0.15); color: var(--yellow); border: 1px solid rgba(212,184,74,0.35); }
+        .sc-grade-badge.grade-lower    { background: rgba(76,175,125,0.15); color: var(--green);  border: 1px solid rgba(76,175,125,0.35); }
+
+        /* ── IDENTITY ────────────────────────────────────────── */
+        .sc-identity {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .sc-domain {
+            font-size: 1.1em;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 3px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .sc-filename {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            color: var(--text-faint);
+            margin-bottom: 10px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .sc-meta-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .sc-meta {
+            font-size: 0.8em;
+            color: var(--text-dim);
+            background: var(--surface);
+            padding: 2px 8px;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+        }
+
+        .sc-meta.sc-meta-alert {
+            color: var(--orange);
+            border-color: rgba(224,138,60,0.3);
+            background: rgba(224,138,60,0.08);
+        }
+
+        .sc-badge {
+            font-family: var(--mono);
+            font-size: 0.72em;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 4px;
+        }
+
+        .sc-badge.leadid {
+            background: rgba(224,138,60,0.15);
+            color: var(--orange);
+            border: 1px solid rgba(224,138,60,0.3);
+        }
+
+        .sc-badge.repair {
+            background: rgba(124,111,247,0.15);
+            color: var(--purple);
+            border: 1px solid rgba(124,111,247,0.3);
+        }
+
+        .sc-damages {
+            font-size: 0.88em;
+            color: var(--text-dim);
+        }
+
+        .sc-damages strong {
+            color: var(--red);
+        }
+
+        /* ── SECTIONS ────────────────────────────────────────── */
+        .sc-section {
+            border-top: 1px solid var(--border);
+            padding-top: 16px;
+            margin-top: 16px;
+        }
+
+        .sc-section-title {
+            font-family: var(--mono);
+            font-size: 0.72em;
+            font-weight: 600;
+            color: var(--text-faint);
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .sc-violation {
+            font-size: 0.85em;
+            color: var(--text-dim);
+            padding: 4px 0;
+            line-height: 1.5;
+        }
+
+        .sc-no-violations {
+            font-size: 0.85em;
+            color: var(--green);
+            border-top: 1px solid var(--border);
+            padding-top: 16px;
+            margin-top: 16px;
+        }
+
+        /* ── SCORE BREAKDOWN BARS ────────────────────────────── */
+        .sc-bar-row {
+            display: grid;
+            grid-template-columns: 64px 1fr 36px;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 7px;
+        }
+
+        .sc-bar-label {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            color: var(--text-dim);
+            white-space: nowrap;
+        }
+
+        .sc-bar-track {
+            height: 6px;
+            background: var(--border);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .sc-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.6s ease;
+            min-width: 2px;
+        }
+
+        .sc-bar-val {
+            font-family: var(--mono);
+            font-size: 0.72em;
+            color: var(--text-faint);
+            text-align: right;
+        }
+
+        /* ── RESPONSIVE ──────────────────────────────────────── */
+        @media (max-width: 500px) {
+            .sc-top { flex-direction: column; align-items: center; }
+            .sc-identity { width: 100%; }
+        }
+
+        /* ── RESPONSIVE ──────────────────────────────────────── */
+        @media (max-width: 640px) {
+            .steps-grid    { grid-template-columns: 1fr; }
+            .score-legend  { grid-template-columns: 1fr; }
+            .page          { padding: 28px 16px 60px; }
+            .topnav        { padding: 12px 16px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── NAV ──────────────────────────────────────────────────── -->
+<nav class="topnav">
+    <a href="/" class="topnav-brand">
+        <div class="icon">🔍</div>
+        HAR Privacy Analyzer
+    </a>
+    <div class="topnav-links">
+        <a href="/" class="nav-link">Single File</a>
+        <a href="/bulk" class="nav-link active">Bulk Ranker</a>
+    </div>
+</nav>
+
+<!-- ── PAGE ─────────────────────────────────────────────────── -->
+<div class="page">
+
+    <div class="page-header">
+        <div class="eyebrow">Bulk Analysis</div>
+        <h1>Privacy Risk Ranker</h1>
+        <p>Upload up to 5 HAR files and get them ranked by privacy risk severity — who has the worst violations, the highest potential damages, and the most aggressive third-party tracking.</p>
+    </div>
+
+    <!-- Upload card -->
+    <div class="card">
+        <div class="card-title">01 — Upload Files</div>
+
+        <div class="drop-zone" id="dropZone">
+            <input type="file" id="fileInput" accept=".har" multiple>
+            <div class="drop-icon">📂</div>
+            <div class="drop-title">Drag &amp; drop HAR files here</div>
+            <div class="drop-sub">or click anywhere in this box to browse</div>
+            <div class="drop-limits">
+                Max <span>5 files</span> &nbsp;·&nbsp; Max <span>100 MB</span> per file &nbsp;·&nbsp; <span>.har</span> only
+            </div>
+        </div>
+
+        <!-- File list -->
+        <div id="fileListEmpty">
+            <span>📭</span> No files selected yet — add some above to get started.
+        </div>
+
+        <div class="file-list" id="fileList" style="display:none;"></div>
+
+        <!-- Slot indicator -->
+        <div class="limits-bar" id="limitsBar" style="display:none;">
+            <div class="slot-counter" id="slotCounter">0 / 5 files</div>
+            <div class="slot-pips" id="slotPips">
+                <div class="slot-pip"></div>
+                <div class="slot-pip"></div>
+                <div class="slot-pip"></div>
+                <div class="slot-pip"></div>
+                <div class="slot-pip"></div>
+            </div>
+            <div class="hint" id="slotHint">Add up to 5 files</div>
+        </div>
+
+        <!-- Actions -->
+        <div class="actions-row">
+            <button class="btn-primary" id="analyzeBtn" disabled onclick="handleAnalyze()">
+                ▶ Analyze &amp; Rank
+            </button>
+            <button class="btn-secondary" id="clearBtn" style="display:none;" onclick="clearFiles()">
+                ✕ Clear All
+            </button>
+            <span class="action-hint" id="actionHint">Add at least 2 files to compare</span>
+        </div>
+    </div>
+
+    <!-- How it works -->
+    <div class="card">
+        <div class="card-title">How It Works</div>
+        <div class="steps-grid">
+            <div class="step-item">
+                <div class="step-num">STEP 01</div>
+                <div class="step-title">Sequential Analysis</div>
+                <div class="step-desc">Files are analyzed one at a time to stay within memory limits. Each HAR is fully scanned then discarded before the next begins.</div>
+            </div>
+            <div class="step-item">
+                <div class="step-num">STEP 02</div>
+                <div class="step-title">Risk Scoring</div>
+                <div class="step-desc">Each file is scored 0–100 based on plaintext PII violations, hashed data transmissions, vendors receiving data, and estimated damages.</div>
+            </div>
+            <div class="step-item">
+                <div class="step-num">STEP 03</div>
+                <div class="step-title">Ranked Results</div>
+                <div class="step-desc">Files are ranked worst-to-best. Drill into any file for the full single-file analysis view with request details and legal context.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scoring legend -->
+    <div class="card">
+        <div class="card-title">Risk Grade Reference</div>
+        <div class="score-legend">
+            <div class="legend-item">
+                <div class="legend-badge critical">CRITICAL</div>
+                <div class="legend-text">
+                    <div class="range">Any plaintext PII to third parties</div>
+                    <div class="desc">Any plaintext personal data (email, phone, name) intercepted by a third-party vendor. Strongest litigation candidates under CIPA §631.</div>
+                </div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-badge high">HIGH RISK</div>
+                <div class="legend-text">
+                    <div class="range">Hashed PII or multiple vendors</div>
+                    <div class="desc">Hashed PII transmissions enabling cross-site tracking, or two or more vendors receiving personal data without clear consent.</div>
+                </div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-badge elevated">ELEVATED</div>
+                <div class="legend-text">
+                    <div class="range">Limited tracking exposure</div>
+                    <div class="desc">Third-party tracking present but no confirmed PII transmission detected. Consent mechanism may be absent.</div>
+                </div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-badge lower">LOWER RISK</div>
+                <div class="legend-text">
+                    <div class="range">Minimal or no violations</div>
+                    <div class="desc">No PII violations detected. Standard anonymous analytics only.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Results section (hidden until analysis runs) -->
+    <div id="resultsSection" style="display:none;">
+        <div class="card">
+            <div class="card-title">02 — Results</div>
+            <div id="resultsContent"></div>
+        </div>
+    </div>
+
+</div><!-- /page -->
+
+<script>
+    const MAX_FILES = 5;
+    const MAX_SIZE_MB = 100;
+    const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024;
+
+    let selectedFiles = []; // Array of File objects
+
+    const dropZone   = document.getElementById('dropZone');
+    const fileInput  = document.getElementById('fileInput');
+    const fileList   = document.getElementById('fileList');
+    const fileEmpty  = document.getElementById('fileListEmpty');
+    const limitsBar  = document.getElementById('limitsBar');
+    const slotCounter= document.getElementById('slotCounter');
+    const slotPips   = document.getElementById('slotPips');
+    const slotHint   = document.getElementById('slotHint');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const clearBtn   = document.getElementById('clearBtn');
+    const actionHint = document.getElementById('actionHint');
+
+    // ── Drag & drop ──────────────────────────────────────────
+    dropZone.addEventListener('dragover', e => {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+
+    dropZone.addEventListener('dragleave', () => {
+        dropZone.classList.remove('dragover');
+    });
+
+    dropZone.addEventListener('drop', e => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        const files = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.har'));
+        addFiles(files);
+    });
+
+    fileInput.addEventListener('change', e => {
+        addFiles(Array.from(e.target.files));
+        fileInput.value = ''; // reset so same file can be re-added after removal
+    });
+
+    // ── File management ───────────────────────────────────────
+    function addFiles(incoming) {
+        incoming.forEach(file => {
+            // Deduplicate by name
+            if (selectedFiles.find(f => f.name === file.name)) return;
+            // Max slots
+            if (selectedFiles.length >= MAX_FILES) return;
+            selectedFiles.push(file);
+        });
+        renderFileList();
+    }
+
+    function removeFile(index) {
+        selectedFiles.splice(index, 1);
+        renderFileList();
+    }
+
+    function clearFiles() {
+        selectedFiles = [];
+        renderFileList();
+    }
+
+    function renderFileList() {
+        // Toggle empty state
+        const hasFiles = selectedFiles.length > 0;
+        fileEmpty.style.display  = hasFiles ? 'none' : 'flex';
+        fileList.style.display   = hasFiles ? 'flex' : 'none';
+        limitsBar.style.display  = hasFiles ? 'flex' : 'none';
+        clearBtn.style.display   = hasFiles ? 'inline-flex' : 'none';
+
+        // Render rows
+        fileList.innerHTML = selectedFiles.map((file, i) => {
+            const sizeMB  = (file.size / (1024 * 1024)).toFixed(1);
+            const isValid = file.name.endsWith('.har') && file.size <= MAX_SIZE_BYTES;
+            const statusClass = isValid ? 'ok' : 'error';
+            const statusText  = !file.name.endsWith('.har')
+                ? '✕ Not a .har file'
+                : file.size > MAX_SIZE_BYTES
+                    ? `✕ Over ${MAX_SIZE_MB}MB limit`
+                    : '✓ Ready';
+            const itemClass = isValid ? 'valid' : 'invalid';
+
+            return `
+                <div class="file-item ${itemClass}">
+                    <span class="file-icon">📄</span>
+                    <span class="file-name" title="${escHtml(file.name)}">${escHtml(file.name)}</span>
+                    <span class="file-size">${sizeMB} MB</span>
+                    <span class="file-status ${statusClass}">${statusText}</span>
+                    <button class="remove-btn" onclick="removeFile(${i})" title="Remove">✕</button>
+                </div>`;
+        }).join('');
+
+        // Update slot pips
+        const pips = slotPips.querySelectorAll('.slot-pip');
+        pips.forEach((pip, i) => {
+            pip.className = 'slot-pip';
+            if (i < selectedFiles.length) {
+                const f = selectedFiles[i];
+                const valid = f.name.endsWith('.har') && f.size <= MAX_SIZE_BYTES;
+                pip.classList.add(valid ? 'filled' : 'over');
+            }
+        });
+
+        // Update counter and hint
+        const validCount = selectedFiles.filter(f => f.name.endsWith('.har') && f.size <= MAX_SIZE_BYTES).length;
+        const remaining  = MAX_FILES - selectedFiles.length;
+        slotCounter.textContent = `${selectedFiles.length} / ${MAX_FILES} files`;
+        slotHint.textContent = remaining > 0
+            ? `${remaining} slot${remaining !== 1 ? 's' : ''} remaining`
+            : 'Maximum files reached';
+
+        // Update analyze button and hint
+        const canAnalyze = validCount >= 1;
+        analyzeBtn.disabled = !canAnalyze;
+
+        if (validCount === 0) {
+            actionHint.textContent = 'Add at least 1 valid .har file to begin';
+        } else if (validCount === 1) {
+            actionHint.textContent = '1 file ready — add more to compare, or analyze solo';
+        } else {
+            actionHint.textContent = `${validCount} files ready to analyze`;
+        }
+    }
+
+    // ── Analyze (SSE streaming) ───────────────────────────────
+    async function handleAnalyze() {
+        const validFiles = selectedFiles.filter(
+            f => f.name.endsWith('.har') && f.size <= MAX_SIZE_BYTES
+        );
+        if (validFiles.length === 0) return;
+
+        setAnalyzing(true);
+
+        // Show results section and initial progress UI
+        const resultsSection = document.getElementById('resultsSection');
+        resultsSection.style.display = 'block';
+        resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        showProgress(validFiles);
+
+        // Build FormData
+        const formData = new FormData();
+        validFiles.forEach(f => formData.append('files', f));
+
+        try {
+            const response = await fetch('/analyze-bulk', {
+                method: 'POST',
+                body: formData,
+            });
+
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({ error: 'Server error' }));
+                throw new Error(err.error || `HTTP ${response.status}`);
+            }
+
+            // Read the SSE stream line by line
+            const reader  = response.body.getReader();
+            const decoder = new TextDecoder();
+            let   buffer  = '';
+            const allSummaries = [];
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop(); // keep incomplete last line
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    let evt;
+                    try { evt = JSON.parse(line.slice(6)); }
+                    catch { continue; }
+
+                    if (evt.event === 'processing') {
+                        // Mark this file as actively scanning
+                        setFileStatus(evt.index, 'scanning', '⚙️', 'Processing…');
+                        setProgressBar(evt.current, evt.total, 'in-progress');
+                        setProgressLabel(`Scanning ${evt.filename}…`);
+                    }
+
+                    else if (evt.event === 'file_done') {
+                        // Mark file complete or failed
+                        if (evt.status === 'complete') {
+                            setFileStatus(evt.index, 'done', '✅', 'Completed');
+                        } else {
+                            setFileStatus(evt.index, 'failed', '❌', evt.error || 'Failed');
+                        }
+                        allSummaries.push(evt);
+                        // Advance bar to reflect completed files
+                        setProgressBar(evt.current, evt.total, 'in-progress');
+                        setProgressLabel(
+                            evt.current < evt.total
+                                ? `Completed ${evt.current} of ${evt.total} files…`
+                                : 'Finalizing…'
+                        );
+                    }
+
+                    else if (evt.event === 'all_done') {
+                        setProgressBar(evt.total || validFiles.length, evt.total || validFiles.length, 'done');
+                        setProgressLabel('All files analyzed');
+                        setTimeout(() => showCompletionMessage(evt), 600);
+                    }
+                }
+            }
+
+        } catch (err) {
+            showErrorMessage(err.message);
+        } finally {
+            setAnalyzing(false);
+        }
+    }
+
+    // ── Progress helpers ──────────────────────────────────────
+    function setAnalyzing(active) {
+        analyzeBtn.disabled  = active;
+        clearBtn.disabled    = active;
+        analyzeBtn.textContent = active ? '⏳ Analyzing…' : '▶ Analyze & Rank';
+    }
+
+    function showProgress(files) {
+        document.getElementById('resultsContent').innerHTML = `
+            <div class="progress-container">
+                <div class="progress-eyebrow">Processing</div>
+                <div class="progress-title">Analyzing ${files.length} file${files.length !== 1 ? 's' : ''}…</div>
+                <div class="progress-sub">Files are scanned one at a time to manage memory safely.</div>
+                <div class="progress-track">
+                    <div class="progress-bar" id="progressBar" style="width:0%"></div>
+                </div>
+                <div class="progress-label" id="progressLabel">Uploading to server…</div>
+                <div class="file-progress-list" id="fileProgressList">
+                    ${files.map((f, i) => `
+                        <div class="fp-item" id="fp-${i}">
+                            <span class="fp-icon" id="fp-icon-${i}">⏳</span>
+                            <span class="fp-name">${escHtml(f.name)}</span>
+                            <span class="fp-status waiting" id="fp-status-${i}">Waiting…</span>
+                        </div>`).join('')}
+                </div>
+            </div>`;
+    }
+
+    function setFileStatus(index, stateClass, icon, label) {
+        const row    = document.getElementById(`fp-${index}`);
+        const ico    = document.getElementById(`fp-icon-${index}`);
+        const status = document.getElementById(`fp-status-${index}`);
+        if (!row || !ico || !status) return;
+
+        // Update row class
+        row.className = `fp-item ${stateClass}`;
+
+        // Update icon and status text
+        ico.textContent    = icon;
+        status.textContent = label;
+        status.className   = `fp-status ${stateClass}`;
+    }
+
+    function setProgressBar(current, total, state) {
+        const bar = document.getElementById('progressBar');
+        if (!bar) return;
+        // Reserve 10% for upload, spread remaining 90% across files
+        const pct = total > 0 ? Math.round(10 + (current / total) * 90) : 10;
+        bar.style.width = (state === 'done' ? 100 : pct) + '%';
+        if (state === 'done') bar.style.background = 'linear-gradient(90deg, #4caf7d, #66bb6a)';
+    }
+
+    function setProgressLabel(text) {
+        const lbl = document.getElementById('progressLabel');
+        if (lbl) lbl.textContent = text;
+    }
+
+    // ── Completion message ────────────────────────────────────
+    function showCompletionMessage(data) {
+        const summaries = data.summaries || [];
+        const completed = summaries.filter(s => s.status === 'complete');
+        const errored   = summaries.filter(s => s.status === 'error');
+
+        // Sort completed files by score descending (worst first)
+        const ranked = [...completed].sort((a, b) => (b.score || 0) - (a.score || 0));
+
+        // --- Score cards ---
+        const cards = ranked.map((s, i) => {
+            const rank         = i + 1;
+            const grade        = s.grade || 'lower';
+            const gradeLabel   = s.grade_label || 'Lower Risk';
+            const score        = s.score || 0;
+            const damages      = s.estimated_damages || 0;
+            const violations   = s.top_violations || [];
+            const bk           = s.breakdown || {};
+            const piiTotal     = (s.vendor_pii_count || 0) + (s.first_party_pii_count || 0);
+
+            const rankEmoji    = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `#${rank}`;
+
+            // Gauge arc: top semicircle, left(14,65)->right(106,65)
+            // center=(60,65), r=46. Score 0=left end, Score 100=right end.
+            // largeArc is always 0 — swept angle never exceeds 180° on a semicircle.
+            const cx = 60, cy = 73, r = 46;
+            const angleDeg = 180 - (score / 100) * 180;
+            const angleRad = angleDeg * (Math.PI / 180);
+            const endX = cx + r * Math.cos(angleRad);
+            const endY = cy - r * Math.sin(angleRad);   // SVG y-axis flipped
+            const largeArc = 0;
+            const gaugeColor = grade === 'critical' ? '#e05c5c'
+                             : grade === 'high'     ? '#e08a3c'
+                             : grade === 'elevated' ? '#d4b84a'
+                             :                        '#4caf7d';
+
+            const violationRows = violations.map(v =>
+                `<div class="sc-violation">• ${escHtml(v)}</div>`
+            ).join('');
+
+            // Breakdown bars: each sub-score is already 0-100
+            const breakdownItems = [
+                { label: 'Plaintext', val: bk.plaintext   || 0 },
+                { label: 'Hashed',    val: bk.hashed      || 0 },
+                { label: 'Damages',   val: bk.damages      || 0 },
+                { label: 'Vendors',   val: bk.vendors      || 0 },
+                { label: 'Factors',   val: bk.aggravating  || 0 },
+            ].map(b => `
+                <div class="sc-bar-row">
+                    <span class="sc-bar-label">${b.label}</span>
+                    <div class="sc-bar-track">
+                        <div class="sc-bar-fill" style="width:${b.val}%;background:${gaugeColor}"></div>
+                    </div>
+                    <span class="sc-bar-val">${b.val}/100</span>
+                </div>`).join('');
+
+            return `
+                <div class="score-card grade-${grade}">
+                    <div class="sc-rank-badge">${rankEmoji}</div>
+
+                    <div class="sc-top">
+                        <!-- Gauge -->
+                        <div class="sc-gauge-wrap">
+                            <svg viewBox="0 0 120 88" class="sc-gauge">
+                                <!-- Track arc: left(14,73) -> right(106,73), r=46, center=(60,73) -->
+                                <!-- Apex at y=27, giving 27px clearance above stroke (stroke-width=9) -->
+                                <path d="M 14 73 A 46 46 0 0 1 106 73"
+                                      fill="none" stroke="#2a3050" stroke-width="9" stroke-linecap="round"/>
+                                <!-- Fill arc (largeArc always 0 for a top semicircle) -->
+                                ${score > 0 ? `<path d="M 14 73 A 46 46 0 0 1 ${endX.toFixed(1)} ${endY.toFixed(1)}"
+                                      fill="none" stroke="${gaugeColor}" stroke-width="9" stroke-linecap="round"/>` : ''}
+                                <!-- Score number -->
+                                <text x="60" y="70" text-anchor="middle" font-size="22" font-weight="700"
+                                      fill="${gaugeColor}" font-family="IBM Plex Mono,monospace">${score}</text>
+                                <!-- "/ 100" label -->
+                                <text x="60" y="82" text-anchor="middle" font-size="8"
+                                      fill="#8892b0" font-family="IBM Plex Sans,sans-serif">out of 100</text>
+                            </svg>
+                            <div class="sc-grade-badge grade-${grade}">${gradeLabel}</div>
+                        </div>
+
+                        <!-- Identity -->
+                        <div class="sc-identity">
+                            <div class="sc-domain">${escHtml(s.domain || s.filename)}</div>
+                            <div class="sc-filename">${escHtml(s.filename)}</div>
+                            <div class="sc-meta-row">
+                                <span class="sc-meta">${s.total_entries || 0} requests</span>
+                                <span class="sc-meta">${s.vendors_detected || 0} vendors</span>
+                                <span class="sc-meta ${piiTotal > 0 ? 'sc-meta-alert' : ''}">${piiTotal} PII item${piiTotal !== 1 ? 's' : ''}</span>
+                                ${s.leadid_detected ? '<span class="sc-badge leadid">LeadID</span>' : ''}
+                                ${s.repair_used     ? '<span class="sc-badge repair">Repaired</span>' : ''}
+                            </div>
+                            <div class="sc-damages">Estimated damages: <strong>$${damages.toLocaleString()}</strong></div>
+                        </div>
+                    </div>
+
+                    <!-- Violations -->
+                    ${violations.length > 0 ? `
+                    <div class="sc-section">
+                        <div class="sc-section-title">Top Violations</div>
+                        ${violationRows}
+                    </div>` : '<div class="sc-no-violations">No significant violations detected</div>'}
+
+                    <!-- Score breakdown -->
+                    <div class="sc-section">
+                        <div class="sc-section-title">Score Breakdown</div>
+                        ${breakdownItems}
+                    </div>
+                </div>`;
+        }).join('');
+
+        // --- Error rows ---
+        const errorRows = errored.map(s => `
+            <div class="completion-file-row error">
+                <span class="cf-icon">❌</span>
+                <div>
+                    <div class="cf-name">${escHtml(s.filename)}</div>
+                    <div class="cf-detail error-text">${escHtml(s.error)}</div>
+                </div>
+            </div>`).join('');
+
+        document.getElementById('resultsContent').innerHTML = `
+            <div class="ranked-header">
+                <div class="ranked-title">📊 Ranked by Privacy Risk</div>
+                <div class="ranked-sub">
+                    ${ranked.length} file${ranked.length !== 1 ? 's' : ''} analyzed
+                    ${errored.length > 0 ? ` &middot; <span style="color:var(--red)">${errored.length} failed</span>` : ''}
+                    &middot; Worst first
+                </div>
+            </div>
+
+            <div class="score-cards-list">
+                ${cards}
+            </div>
+
+            ${errored.length > 0 ? `
+            <div style="margin-top:20px;">
+                <div class="sc-section-title" style="font-size:0.8em;color:var(--text-dim);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:10px;">Failed Files</div>
+                ${errorRows}
+            </div>` : ''}`;
+    }
+
+    function showErrorMessage(msg) {
+        document.getElementById('resultsContent').innerHTML = `
+            <div class="error-container">
+                <div class="err-icon">⚠️</div>
+                <div class="err-title">Analysis Failed</div>
+                <div class="err-msg">${escHtml(msg)}</div>
+                <div class="err-hint">Check that your HAR files are valid and under 100MB, then try again.</div>
+            </div>`;
+    }
+
+    // ── Utility ───────────────────────────────────────────────
+    function escHtml(str) {
+        const d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+</script>
+</body>
+</html>

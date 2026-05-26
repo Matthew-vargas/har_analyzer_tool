@@ -1,26 +1,24 @@
-# Use Python 3.11 slim image
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
-# Install Flask
-RUN pip install --no-cache-dir Flask==3.0.0
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy all files from repository root
-COPY . .
+# Copy application files
+COPY backend.py .
+COPY app.py .
 
-# Create static directory if it doesn't exist and ensure frontend is there
-RUN mkdir -p static && \
-    if [ -f har_analyzer_tool_frontend.html ]; then \
-        cp har_analyzer_tool_frontend.html static/har_analyzer_tool_frontend.html; \
-    fi
+# Copy static assets
+RUN mkdir -p static
+COPY static/index.html static/index.html
+COPY static/bulk.html static/bulk.html
 
-# Expose port (Render will override with PORT env var)
+# Expose port (Render overrides with PORT env var)
 EXPOSE 5000
 
-# Set environment variable for production
 ENV FLASK_ENV=production
 
-# Run the application
-CMD ["python", "har_analyzer_tool_backend.py"]
+# Use gunicorn for production (handles concurrency and SSE properly)
+CMD gunicorn --bind 0.0.0.0:$PORT --timeout 300 --worker-class sync --workers 1 app:app
