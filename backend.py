@@ -17,6 +17,65 @@ app = Flask(__name__, static_folder='static')
 app.config['MAX_CONTENT_LENGTH'] = 600 * 1024 * 1024  # 600 MB (covers 5x 100MB batch uploads + multipart overhead)
 
 
+
+def strip_response_bodies(text):
+    """
+    Option B memory optimization: remove HTTP response body text from a raw
+    HAR string before parsing, reducing parsed JSON size by ~60-70%.
+
+    Response bodies (HTML pages, JS/CSS files, base64 images) make up the
+    majority of a HAR file's size but are never read during PII analysis —
+    only request data (URLs, POST bodies, query params) is inspected.
+
+    Replaces each "content":{...} block with a minimal placeholder while
+    preserving response status, headers, and bodySize. Uses brace-counting
+    rather than regex to correctly handle nested braces in JS/CSS content.
+
+    Safe: never touches request postData — "content" only appears inside
+    HAR response objects per the HAR 1.2 spec.
+    """
+    result = []
+    i = 0
+    n = len(text)
+
+    while i < n:
+        match = re.search(r'"content"\s*:\s*\{', text[i:])
+        if not match:
+            result.append(text[i:])
+            break
+
+        brace_start = i + match.end() - 1
+        result.append(text[i:brace_start + 1])
+
+        # Walk forward counting braces to find the matching closing brace,
+        # respecting string boundaries so we don't miscount braces in values.
+        depth = 1
+        j = brace_start + 1
+        in_string = False
+        escape_next = False
+
+        while j < n and depth > 0:
+            ch = text[j]
+            if escape_next:
+                escape_next = False
+            elif ch == '\\' and in_string:
+                escape_next = True
+            elif ch == '"' and not escape_next:
+                in_string = not in_string
+            elif not in_string:
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+            j += 1
+
+        result.append('"size":0,"mimeType":""')
+        result.append('}')
+        i = j
+
+    return ''.join(result)
+
+
 def resilient_parse_har(har_text):
     """
     Extract as many entries as possible from a potentially corrupted HAR file.
@@ -650,7 +709,9 @@ def find_first_party_domain(har_data):
     domains = {}
     
     for entry in har_data['log']['entries']:
-        url = entry['request']['url']
+        url = entry.get('request', {}).get('url', '')
+        if not url:
+            continue
         try:
             parsed = urlparse(url)
             domain = parsed.netloc
@@ -665,6 +726,7 @@ def find_first_party_domain(har_data):
                 'fastly', 'cloudfront', 'newrelic', 'nr-data',
                 'segment', 'sentry', 'hotjar', 'intercom',
                 'zendesk', 'stripe', 'twilio', 'sendgrid',
+                'clarity.ms', 'hotjar', 'mixpanel', 'heap', 'mouseflow',
             ]
             
             if any(skip in domain.lower() for skip in skip_domains):
@@ -685,96 +747,125 @@ def find_first_party_domain(har_data):
 
 def detect_vendor_requests(entries):
     """
-    Detect all major third-party vendors in HAR entries.
-    Returns dictionary with vendor names and their request details.
+    Option D memory optimization: detect vendors AND extract all needed data
+    inline in a single pass, storing NO 'entry' references.
+
+    Previously this function stored {'entry': entry, ...} for every matched
+    request, keeping the entire parsed JSON (~3.5x file size) alive in memory
+    until analyze_har_simple returned. Now we extract everything we need from
+    each entry immediately and discard the reference, allowing Python's GC to
+    free the parsed JSON as soon as the caller does `del har_data`.
+
+    Each vendor's requests list now stores lightweight dicts with:
+      - Scalar fields extracted from the entry (url, method, timestamp, etc.)
+      - pii: list of PII items found (extracted inline here)
+      - all_request_info: the summary row for the expandable UI list
+    No reference to the original entry object is retained.
     """
-    vendors = {
-        'leadid': {'name': 'LeadID/Jornaya/TrustedForm', 'requests': [], 'risk': 'critical'},
-        'google': {'name': 'Google Analytics/Ads', 'requests': [], 'risk': 'high'},
-        'facebook': {'name': 'Facebook/Meta Pixel', 'requests': [], 'risk': 'critical'},
-        'tiktok': {'name': 'TikTok Pixel', 'requests': [], 'risk': 'critical'},
-        'invoca': {'name': 'Invoca Call Tracking', 'requests': [], 'risk': 'high'},
-        'microsoft': {'name': 'Microsoft/Bing Ads', 'requests': [], 'risk': 'medium'},
-        'linkedin': {'name': 'LinkedIn Insight Tag', 'requests': [], 'risk': 'medium'},
+    VENDOR_PATTERNS = {
+        'leadid':    ('LeadID/Jornaya/TrustedForm', 'critical',
+                      ['leadid.com', 'jornaya.com', 'trustedform.com', 'trueleadid.com']),
+        'google':    ('Google Analytics/Ads', 'high',
+                      ['google-analytics.com', 'googletagmanager.com', 'doubleclick.net',
+                       'googlesyndication.com', 'googleadservices.com', '/google/ads', '/gtag/']),
+        'facebook':  ('Facebook/Meta Pixel', 'critical',
+                      ['facebook.com/tr', 'connect.facebook.net', 'facebook.net',
+                       '/fbevents.js', 'fbcdn.net']),
+        'tiktok':    ('TikTok Pixel', 'critical',
+                      ['analytics.tiktok.com', 'business-api.tiktok.com',
+                       'tiktok.com/i18n/pixel', '/tiktok-pixel']),
+        'invoca':    ('Invoca Call Tracking', 'high',
+                      ['invoca.net', 'invocacdn.com']),
+        'microsoft': ('Microsoft/Bing Ads', 'medium',
+                      ['bat.bing.com', 'bing.com/api', 'clarity.ms', 'uetanalytics.com']),
+        'linkedin':  ('LinkedIn Insight Tag', 'medium',
+                      ['linkedin.com/px', 'snap.licdn.com', 'linkedin.com/li/track']),
     }
-    
+
+    vendors = {
+        key: {
+            'name': name,
+            'risk': risk,
+            'request_count': 0,
+            'post_count': 0,
+            'pii': [],          # extracted PII items (lightweight dicts only)
+            'all_requests': [], # summary rows for expandable UI list
+        }
+        for key, (name, risk, _) in VENDOR_PATTERNS.items()
+    }
+
     for entry in entries:
-        url = entry.get('request', {}).get('url', '').lower()
-        method = entry.get('request', {}).get('method', 'GET')
-        
-        # LeadID ecosystem
-        if any(domain in url for domain in ['leadid.com', 'jornaya.com', 'trustedform.com', 'trueleadid.com']):
-            vendors['leadid']['requests'].append({
-                'url': entry['request']['url'],
-                'method': method,
-                'timestamp': entry.get('startedDateTime', ''),
-                'entry': entry
+        url_lower = entry.get('request', {}).get('url', '').lower()
+        full_url  = entry.get('request', {}).get('url', '')
+        method    = entry.get('request', {}).get('method', 'GET')
+        timestamp = entry.get('startedDateTime', '')
+
+        # Match vendor
+        matched_key = None
+        for key, (_, _, patterns) in VENDOR_PATTERNS.items():
+            if any(p in url_lower for p in patterns):
+                matched_key = key
+                break
+        if matched_key is None:
+            continue
+
+        v = vendors[matched_key]
+        vendor_name = v['name']
+
+        # --- Extract scalars from entry NOW, before we lose the reference ---
+        time_ms         = entry.get('time', 0)
+        response_status = entry.get('response', {}).get('status', 0)
+        request_size    = entry.get('request', {}).get('bodySize', 0)
+        response_size   = entry.get('response', {}).get('bodySize', 0)
+
+        # --- PII extraction inline (was extract_pii_from_vendor_requests) ---
+        pii_found = extract_pii_from_request(entry)
+        pii_items = []
+        for pii_item in pii_found:
+            is_hashed    = 'Hashed' in pii_item['type']
+            legal_context = get_legal_context(pii_item['type'], vendor_name, is_hashed)
+            pii_items.append({
+                'type':      pii_item['type'],
+                'value':     pii_item['value'],
+                'field':     pii_item.get('field', ''),
+                'timestamp': timestamp,
+                'url':       full_url[:100],
+                'note':      pii_item.get('note', ''),
+                'request_details': {
+                    'method':          method,
+                    'full_url':        full_url,
+                    'response_code':   response_status,
+                    'response_time_ms': int(time_ms) if time_ms else 0,
+                    'request_size':    request_size,
+                    'response_size':   response_size,
+                },
+                'legal_context': legal_context,
             })
-        
-        # Google (Analytics, Ads, DoubleClick, Tag Manager)
-        elif any(domain in url for domain in ['google-analytics.com', 'googletagmanager.com', 
-                                               'doubleclick.net', 'googlesyndication.com',
-                                               'googleadservices.com', '/google/ads', '/gtag/']):
-            vendors['google']['requests'].append({
-                'url': entry['request']['url'],
-                'method': method,
-                'timestamp': entry.get('startedDateTime', ''),
-                'entry': entry
-            })
-        
-        # Facebook/Meta
-        elif any(domain in url for domain in ['facebook.com/tr', 'connect.facebook.net',
-                                               'facebook.net', '/fbevents.js', 'fbcdn.net']):
-            vendors['facebook']['requests'].append({
-                'url': entry['request']['url'],
-                'method': method,
-                'timestamp': entry.get('startedDateTime', ''),
-                'entry': entry
-            })
-        
-        # TikTok
-        elif any(domain in url for domain in ['analytics.tiktok.com', 'business-api.tiktok.com',
-                                               'tiktok.com/i18n/pixel', '/tiktok-pixel']):
-            vendors['tiktok']['requests'].append({
-                'url': entry['request']['url'],
-                'method': method,
-                'timestamp': entry.get('startedDateTime', ''),
-                'entry': entry
-            })
-        
-        # Invoca
-        elif any(domain in url for domain in ['invoca.net', 'invocacdn.com']):
-            vendors['invoca']['requests'].append({
-                'url': entry['request']['url'],
-                'method': method,
-                'timestamp': entry.get('startedDateTime', ''),
-                'entry': entry
-            })
-        
-        # Microsoft/Bing
-        elif any(domain in url for domain in ['bat.bing.com', 'bing.com/api', 'clarity.ms',
-                                               'uetanalytics.com']):
-            vendors['microsoft']['requests'].append({
-                'url': entry['request']['url'],
-                'method': method,
-                'timestamp': entry.get('startedDateTime', ''),
-                'entry': entry
-            })
-        
-        # LinkedIn
-        elif any(domain in url for domain in ['linkedin.com/px', 'snap.licdn.com', 
-                                               'linkedin.com/li/track']):
-            vendors['linkedin']['requests'].append({
-                'url': entry['request']['url'],
-                'method': method,
-                'timestamp': entry.get('startedDateTime', ''),
-                'entry': entry
-            })
-    
+
+        # --- Build all_requests summary row (was built in analyze_har_simple) ---
+        has_pii = len(pii_items) > 0
+        all_request_row = {
+            'method':          method,
+            'url':             full_url,
+            'timestamp':       timestamp,
+            'response_code':   response_status,
+            'response_time_ms': int(time_ms) if time_ms else 0,
+            'has_pii':         has_pii,
+        }
+
+        # Accumulate — NO 'entry' reference stored anywhere
+        v['request_count'] += 1
+        if method == 'POST':
+            v['post_count'] += 1
+        v['pii'].extend(pii_items)
+        v['all_requests'].append(all_request_row)
+
+        # entry goes out of scope at end of loop iteration.
+        # With no stored reference, GC can free it as soon as
+        # del har_data is called in the caller.
+
     # Filter out vendors with no requests
-    detected_vendors = {k: v for k, v in vendors.items() if len(v['requests']) > 0}
-    
-    return detected_vendors
+    return {k: v for k, v in vendors.items() if v['request_count'] > 0}
 
 
 def get_legal_severity(pii_type, is_hashed=False):
@@ -849,59 +940,7 @@ def get_legal_context(pii_type, vendor_name, is_hashed=False):
     return context
 
 
-def extract_pii_from_vendor_requests(vendor_requests, vendor_name='Third Party'):
-    """
-    Extract PII from a vendor's requests with full request details and legal context
-    """
-    all_pii = []
-    
-    for req in vendor_requests:
-        entry = req['entry']
-        pii_found = extract_pii_from_request(entry)
-        
-        # Extract request details
-        method = entry.get('request', {}).get('method', 'UNKNOWN')
-        url = req['url']
-        timestamp = req['timestamp']
-        
-        # Extract timing and response info
-        time_ms = entry.get('time', 0)
-        response_status = entry.get('response', {}).get('status', 0)
-        request_size = entry.get('request', {}).get('bodySize', 0)
-        response_size = entry.get('response', {}).get('bodySize', 0)
-        
-        for pii_item in pii_found:
-            # Check if this is a hashed value
-            is_hashed = 'Hashed' in pii_item['type']
-            
-            # Get legal context
-            legal_context = get_legal_context(pii_item['type'], vendor_name, is_hashed)
-            
-            all_pii.append({
-                'type': pii_item['type'],
-                'value': pii_item['value'],
-                'field': pii_item['field'],
-                'timestamp': timestamp,
-                'url': url[:100],
-                
-                # NEW: Request details
-                'request_details': {
-                    'method': method,
-                    'full_url': url,
-                    'response_code': response_status,
-                    'response_time_ms': int(time_ms) if time_ms else 0,
-                    'request_size': request_size,
-                    'response_size': response_size
-                },
-                
-                # NEW: Legal context
-                'legal_context': legal_context,
-                
-                # Include note if present (for hashes)
-                'note': pii_item.get('note', '')
-            })
-    
-    return all_pii
+# extract_pii_from_vendor_requests removed — logic merged into detect_vendor_requests (Option D)
 
 
 def analyze_first_party_requests(entries, first_party_domain):
@@ -1082,107 +1121,113 @@ def build_simple_timeline(requests):
 
 def analyze_har_simple(har_data):
     """
-    Analyze HAR file for all major third-party vendors
+    Analyze HAR file for all major third-party vendors.
+
+    Option D memory layout:
+      1. Extract scalars (total_requests, post_requests, first_party, session info)
+         from har_data while we still have it.
+      2. Run first_party and LeadID timeline analysis (both need raw entries).
+      3. Call detect_vendor_requests — now does inline PII extraction with NO
+         entry references stored. Returns fully extracted lightweight dicts.
+      4. del har_data — at this point no entry refs exist anywhere, so Python's
+         GC can immediately free ~3.5x file size of parsed JSON.
+      5. All remaining work uses only lightweight extracted data.
     """
-    
-    # 1. Find first-party domain
-    first_party = find_first_party_domain(har_data)
-    
-    # 2. Get all entries
+
+    # 1. Extract scalars and session info from har_data upfront
     entries = har_data['log']['entries']
     total_requests = len(entries)
-    post_requests = sum(1 for e in entries if e.get('request', {}).get('method') == 'POST')
-    
-    # 3. Detect all vendors
-    detected_vendors = detect_vendor_requests(entries)
-    
-    # 4. Extract PII from each vendor
-    vendors_with_pii = {}
-    for vendor_key, vendor_data in detected_vendors.items():
-        pii = extract_pii_from_vendor_requests(vendor_data['requests'], vendor_data['name'])
-        
-        # Store ALL requests for this vendor (for expandable list)
-        all_requests_info = []
-        for req in vendor_data['requests']:
-            entry = req['entry']
-            all_requests_info.append({
-                'method': entry.get('request', {}).get('method', 'UNKNOWN'),
-                'url': req['url'],
-                'timestamp': req['timestamp'],
-                'response_code': entry.get('response', {}).get('status', 0),
-                'response_time_ms': int(entry.get('time', 0)),
-                'has_pii': any(p['url'][:100] == req['url'][:100] for p in pii)
-            })
-        
-        vendors_with_pii[vendor_key] = {
-            'name': vendor_data['name'],
-            'risk': vendor_data['risk'],
-            'request_count': len(vendor_data['requests']),
-            'post_count': sum(1 for r in vendor_data['requests'] if r['method'] == 'POST'),
-            'pii': pii,
-            'pii_count': len(set(f"{p['type']}:{p['value']}" for p in pii)),
-            'all_requests': all_requests_info  # NEW: For expandable list
-        }
-    
-    # 5. Build timeline for LeadID (backwards compatibility)
-    leadid_timeline = []
-    if 'leadid' in detected_vendors:
-        leadid_requests = []
-        for req in detected_vendors['leadid']['requests']:
-            pii_found = extract_pii_from_request(req['entry'])
-            if pii_found:
-                leadid_requests.append({
-                    'timestamp': req['timestamp'],
-                    'url': req['url'],
-                    'captures': pii_found
-                })
-        leadid_timeline = build_simple_timeline(leadid_requests)
-    
-    # 6. Analyze first-party POST requests for PII
-    first_party_analysis = analyze_first_party_requests(entries, first_party)
-    
-    # 7. Get session time range
+    post_requests  = sum(1 for e in entries if e.get('request', {}).get('method') == 'POST')
+    first_party    = find_first_party_domain(har_data)
+
     session_start = None
-    session_date = None
-    
+    session_date  = None
     if entries:
         try:
-            first_timestamp = entries[0].get('startedDateTime', '')
-            if first_timestamp:
-                dt = datetime.fromisoformat(first_timestamp.replace('Z', '+00:00'))
+            first_ts = entries[0].get('startedDateTime', '')
+            if first_ts:
+                dt = datetime.fromisoformat(first_ts.replace('Z', '+00:00'))
                 session_start = dt.strftime('%I:%M %p')
-                session_date = dt.strftime('%B %d, %Y')
+                session_date  = dt.strftime('%B %d, %Y')
         except:
             session_start = 'Unknown'
-            session_date = 'Unknown'
-    
+            session_date  = 'Unknown'
+
+    # 2. First-party analysis (needs raw entries — do before del har_data)
+    first_party_analysis = analyze_first_party_requests(entries, first_party)
+
+    # 3. LeadID timeline (needs raw entries — do before del har_data)
+    # We rebuild it from the PII already extracted in step 4 below after the
+    # vendor pass, but we need entries for the timeline builder format.
+    # Build a lightweight capture list now while entries are still alive.
+    leadid_captures = []
+    for entry in entries:
+        url_lower = entry.get('request', {}).get('url', '').lower()
+        if any(d in url_lower for d in ['leadid.com', 'jornaya.com', 'trustedform.com', 'trueleadid.com']):
+            pii_found = extract_pii_from_request(entry)
+            if pii_found:
+                leadid_captures.append({
+                    'timestamp': entry.get('startedDateTime', ''),
+                    'url':       entry.get('request', {}).get('url', ''),
+                    'captures':  pii_found,
+                })
+
+    # 4. Vendor detection + inline PII extraction (Option D: no entry refs stored)
+    detected_vendors = detect_vendor_requests(entries)
+
+    # 5. Option D: release the parsed JSON now — no entry refs remain anywhere
+    del entries, har_data
+
+    # 6. Build final vendor output from the already-extracted lightweight data
+    vendors_with_pii = {}
+    leadid_in_vendors = False
+    leadid_request_count = 0
+
+    for vendor_key, vendor_data in detected_vendors.items():
+        pii = vendor_data['pii']
+        pii_count = len(set(f"{p['type']}:{p['value']}" for p in pii))
+
+        vendors_with_pii[vendor_key] = {
+            'name':          vendor_data['name'],
+            'risk':          vendor_data['risk'],
+            'request_count': vendor_data['request_count'],
+            'post_count':    vendor_data['post_count'],
+            'pii':           pii,
+            'pii_count':     pii_count,
+            'all_requests':  vendor_data['all_requests'],
+        }
+
+        if vendor_key == 'leadid':
+            leadid_in_vendors = True
+            leadid_request_count = vendor_data['request_count']
+
+    # 7. Build LeadID timeline from the lightweight captures collected in step 3
+    leadid_timeline = build_simple_timeline(leadid_captures) if leadid_captures else []
+
     # 8. Count total unique PII across all vendors
     all_pii = set()
     for vendor_data in vendors_with_pii.values():
         for pii in vendor_data['pii']:
             all_pii.add(f"{pii['type']}:{pii['value']}")
-    
+
     return {
-        'first_party': first_party,
+        'first_party':    first_party,
         'total_requests': total_requests,
-        'post_requests': post_requests,
-        
-        # Vendors detected
+        'post_requests':  post_requests,
+
         'vendors_detected': len(detected_vendors),
-        'vendors': vendors_with_pii,
-        
-        # First-party PII collection (NEW!)
+        'vendors':          vendors_with_pii,
+
         'first_party_pii': first_party_analysis,
-        
-        # Legacy LeadID fields (backwards compatibility with Phase 1 frontend)
-        'leadid_detected': 'leadid' in detected_vendors,
-        'leadid_request_count': len(detected_vendors.get('leadid', {}).get('requests', [])),
-        'timeline': leadid_timeline,
-        
-        # Overall stats
-        'pii_count': len(all_pii),
+
+        # Legacy LeadID fields
+        'leadid_detected':       leadid_in_vendors,
+        'leadid_request_count':  leadid_request_count,
+        'timeline':              leadid_timeline,
+
+        'pii_count':     len(all_pii),
         'session_start': session_start,
-        'session_date': session_date,
+        'session_date':  session_date,
     }
 
 @app.route('/')
@@ -1223,7 +1268,15 @@ def analyze():
                 har_text = file_content.decode('utf-8', errors='replace')
             
             # Remove control characters that break JSON parsing
+            # Option C: free the original decoded string immediately so both
+            # full-file strings never coexist in memory at once.
             har_text_clean = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', har_text)
+            del har_text  # Option C: release ~file_size MB here
+
+            # Option B: strip response bodies before parsing.
+            # Response HTML/JS/CSS/images are never used for PII detection
+            # but inflate parsed JSON by 3-4x. Shrinks peak memory ~60%.
+            har_text_clean = strip_response_bodies(har_text_clean)
             
             # Try standard JSON parsing first
             repair_used = False
@@ -1555,9 +1608,17 @@ def analyze_bulk():
                 except UnicodeDecodeError:
                     har_text = file_bytes.decode('utf-8', errors='replace')
                 finally:
-                    del file_bytes
+                    del file_bytes  # raw bytes no longer needed
 
+                # Option C: free original string immediately so both
+                # full-file strings never coexist in memory at once.
                 har_text_clean = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', har_text)
+                del har_text  # Option C: release ~file_size MB here
+
+                # Option B: strip response bodies before parsing.
+                # Response HTML/JS/CSS/images are never used for PII detection
+                # but inflate parsed JSON by 3-4x. Shrinks peak memory ~60%.
+                har_text_clean = strip_response_bodies(har_text_clean)
 
             except Exception as e:
                 result = {'event': 'file_done', 'index': idx, 'filename': filename,
