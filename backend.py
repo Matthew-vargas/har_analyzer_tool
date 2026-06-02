@@ -1582,6 +1582,9 @@ def analyze_bulk():
                 continue
 
             # --- Read from disk one at a time ---
+            # Temp file kept alive until after plaintext supplement
+            # (needed for repaired/corrupted files). Deleted at end of
+            # each file's processing block regardless of outcome.
             repair_used = False
             try:
                 try:
@@ -1589,8 +1592,6 @@ def analyze_bulk():
                         har_text = fh.read()
                 except Exception as e:
                     raise Exception(f'Could not read file: {str(e)}')
-                finally:
-                    os.unlink(tmp_path)  # delete temp file immediately after reading
 
                 # Option C: clean then del original string
                 har_text_clean = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', har_text)
@@ -1641,12 +1642,45 @@ def analyze_bulk():
             try:
                 results = analyze_har_simple(har_data)  # dels har_data internally (Option D)
 
-                # Plaintext supplement for repaired files
+                # Plaintext supplement for repaired/corrupted files.
+                # Temp file is still on disk — re-read the cleaned text from it,
+                # run the supplement, then delete. This is the fix for the tradeoff
+                # noted in the original tempfile implementation.
                 if repair_used:
                     try:
+                        # Re-read temp file for plaintext supplement.
+                        # analyze_har_as_plaintext uses regex pattern matching only —
+                        # it does not need pre-cleaned text, so we skip the re.sub
+                        # step to avoid holding two full copies of the file in RAM.
                         first_party_domain = results.get('first_party', '')
-                        # Re-read from temp is not possible (deleted), skip plaintext supplement
-                        # for repaired files in bulk mode to avoid re-reading
+                        with open(tmp_path, 'r', encoding='utf-8', errors='replace') as fh:
+                            supplement_text = fh.read()
+                        plaintext_pii = analyze_har_as_plaintext(supplement_text, first_party_domain)
+                        del supplement_text
+                        if plaintext_pii['pii_count'] > 0:
+                            existing = results.get('first_party_pii', {})
+                            existing_items = existing.get('pii_items', [])
+                            all_items = existing_items + plaintext_pii.get('pii_items', [])
+                            unique = {f"{p['type']}:{p['value']}": p for p in all_items}
+                            combined = list(unique.values())
+                            results['first_party_pii'] = {
+                                'pii_items': combined,
+                                'pii_count': len(combined),
+                                'post_count': existing.get('post_count', 0),
+                                'method': 'hybrid' if existing_items else 'plaintext_fallback',
+                            }
+                    except Exception:
+                        pass  # supplement failure is non-fatal
+                    finally:
+                        # Temp file no longer needed — delete it now
+                        try:
+                            os.unlink(tmp_path)
+                        except Exception:
+                            pass
+                else:
+                    # Not repaired — temp file no longer needed
+                    try:
+                        os.unlink(tmp_path)
                     except Exception:
                         pass
 
