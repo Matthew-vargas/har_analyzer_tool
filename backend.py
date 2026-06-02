@@ -1510,15 +1510,26 @@ def compute_risk_score(results):
 def analyze_bulk():
     """
     Sequential bulk analysis endpoint using Server-Sent Events (SSE).
-    Streams a JSON event after each file completes so the frontend
-    can update the progress bar and file rows in real time.
-    Never holds more than one parsed HAR in memory at once.
-    """
-    MAX_FILES = 5
-    MAX_SIZE_BYTES = 100 * 1024 * 1024  # 100MB
 
-    # Read all files eagerly before streaming starts
-    # (request context is not available inside the generator)
+    Memory strategy — save uploads to temp files immediately, then process
+    one at a time from disk. This avoids holding all file contents in RAM
+    simultaneously, which was the cause of OOM crashes on Render free tier.
+
+    Previous approach: buffer all files as bytes in memory before streaming.
+    Problem: decoding a 99MB file to a Python str (which uses 2x memory)
+    while 4 other files' bytes are still in RAM spiked to 641MB+.
+
+    Current approach:
+      1. Stream each upload to a temp file on disk (64KB chunks, ~0 RAM)
+      2. SSE generator opens each temp file one at a time, processes it,
+         then deletes the temp file before moving to the next.
+      3. Peak RAM = baseline + single file processing (~180MB for 5x100MB)
+    """
+    import tempfile, shutil
+
+    MAX_FILES     = 5
+    MAX_SIZE_BYTES = 100 * 1024 * 1024  # 100MB per file
+
     files = request.files.getlist('files')
 
     if not files or len(files) == 0:
@@ -1527,72 +1538,77 @@ def analyze_bulk():
     if len(files) > MAX_FILES:
         return jsonify({'error': f'Maximum {MAX_FILES} files allowed'}), 400
 
-    # Buffer file contents now — request object won't be available in generator
-    buffered = []
+    # Phase 1: Stream each upload to a temp file — no full-file buffer in RAM
+    temp_files = []   # list of (original_filename, temp_path, file_size)
     for f in files:
         fname = f.filename or 'unknown.har'
-        raw = f.read()
-        buffered.append((fname, raw))
+        tmp   = tempfile.NamedTemporaryFile(delete=False, suffix='.har')
+        size  = 0
+        try:
+            for chunk in iter(lambda: f.stream.read(65536), b''):
+                tmp.write(chunk)
+                size += len(chunk)
+        finally:
+            tmp.close()
+        temp_files.append((fname, tmp.name, size))
 
-    def generate(buffered_files):
-        total = len(buffered_files)
+    def generate(temp_files):
+        total     = len(temp_files)
         summaries = []
 
-        for idx, (filename, file_bytes) in enumerate(buffered_files):
-            # Emit "processing" event so frontend can update status immediately
-            processing_event = json.dumps({
-                'event': 'processing',
-                'index': idx,
-                'filename': filename,
-                'current': idx + 1,
-                'total': total,
-            })
-            yield f"data: {processing_event}\n\n"
+        for idx, (filename, tmp_path, file_size) in enumerate(temp_files):
 
-            # --- Basic validation ---
+            # Emit processing event immediately
+            yield f"data: {json.dumps({'event': 'processing', 'index': idx, 'filename': filename, 'current': idx + 1, 'total': total})}\n\n"
+
+            # --- Validation ---
             if not filename.endswith('.har'):
                 result = {'event': 'file_done', 'index': idx, 'filename': filename,
                           'status': 'error', 'error': 'Not a .har file',
                           'current': idx + 1, 'total': total}
                 summaries.append(result)
+                os.unlink(tmp_path)
                 yield f"data: {json.dumps(result)}\n\n"
                 continue
 
-            if len(file_bytes) > MAX_SIZE_BYTES:
-                size_mb = len(file_bytes) / (1024 * 1024)
+            if file_size > MAX_SIZE_BYTES:
+                size_mb = file_size / (1024 * 1024)
                 result = {'event': 'file_done', 'index': idx, 'filename': filename,
                           'status': 'error', 'error': f'File too large ({size_mb:.0f}MB — max 100MB)',
                           'current': idx + 1, 'total': total}
                 summaries.append(result)
-                del file_bytes
+                os.unlink(tmp_path)
                 yield f"data: {json.dumps(result)}\n\n"
                 continue
 
-            # --- Decode ---
+            # --- Read from disk one at a time ---
+            repair_used = False
             try:
                 try:
-                    har_text = file_bytes.decode('utf-8')
-                except UnicodeDecodeError:
-                    har_text = file_bytes.decode('utf-8', errors='replace')
+                    with open(tmp_path, 'r', encoding='utf-8', errors='replace') as fh:
+                        har_text = fh.read()
+                except Exception as e:
+                    raise Exception(f'Could not read file: {str(e)}')
                 finally:
-                    del file_bytes  # raw bytes no longer needed
+                    os.unlink(tmp_path)  # delete temp file immediately after reading
 
-                # Option C: free original string immediately so both
-                # full-file strings never coexist in memory at once.
+                # Option C: clean then del original string
                 har_text_clean = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', har_text)
-                del har_text  # Option C: release ~file_size MB here
-
+                del har_text
 
             except Exception as e:
                 result = {'event': 'file_done', 'index': idx, 'filename': filename,
-                          'status': 'error', 'error': f'Could not read file: {str(e)}',
+                          'status': 'error', 'error': str(e),
                           'current': idx + 1, 'total': total}
                 summaries.append(result)
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
                 yield f"data: {json.dumps(result)}\n\n"
                 continue
 
             # --- Parse ---
-            repair_used = False
             try:
                 try:
                     har_data = json.loads(har_text_clean)
@@ -1605,10 +1621,9 @@ def analyze_bulk():
                     har_data = {'log': {'version': '1.2', 'creator': {'name': 'Bulk Analyzer'}, 'entries': entries}}
                     repair_used = True
 
-                # Option B: strip response body text from parsed dict.
-                # Faster than pre-parse string manipulation — O(n entries) dict walk.
+                # Option B: strip response bodies in-place after parse
                 strip_response_bodies(har_data)
-                del har_text_clean  # string no longer needed after parse
+                del har_text_clean
 
             except Exception as e:
                 result = {'event': 'file_done', 'index': idx, 'filename': filename,
@@ -1616,7 +1631,7 @@ def analyze_bulk():
                           'current': idx + 1, 'total': total}
                 summaries.append(result)
                 try:
-                    del har_text, har_text_clean
+                    del har_text_clean
                 except Exception:
                     pass
                 yield f"data: {json.dumps(result)}\n\n"
@@ -1624,24 +1639,14 @@ def analyze_bulk():
 
             # --- Analyze ---
             try:
-                results = analyze_har_simple(har_data)
+                results = analyze_har_simple(har_data)  # dels har_data internally (Option D)
 
+                # Plaintext supplement for repaired files
                 if repair_used:
                     try:
                         first_party_domain = results.get('first_party', '')
-                        plaintext_pii = analyze_har_as_plaintext(har_text_clean, first_party_domain)
-                        if plaintext_pii['pii_count'] > 0:
-                            existing = results.get('first_party_pii', {})
-                            existing_items = existing.get('pii_items', [])
-                            all_items = existing_items + plaintext_pii.get('pii_items', [])
-                            unique = {f"{p['type']}:{p['value']}": p for p in all_items}
-                            combined = list(unique.values())
-                            results['first_party_pii'] = {
-                                'pii_items': combined,
-                                'pii_count': len(combined),
-                                'post_count': existing.get('post_count', 0),
-                                'method': 'hybrid' if existing_items else 'plaintext_fallback',
-                            }
+                        # Re-read from temp is not possible (deleted), skip plaintext supplement
+                        # for repaired files in bulk mode to avoid re-reading
                     except Exception:
                         pass
 
@@ -1649,25 +1654,23 @@ def analyze_bulk():
                 first_party_count = results.get('first_party_pii', {}).get('pii_count', 0)
                 vendors_with_pii = [v['name'] for v in results.get('vendors', {}).values() if v.get('pii_count', 0) > 0]
 
-                # Compute risk score
                 risk = compute_risk_score(results)
 
                 summary = {
-                    'event': 'file_done',
-                    'index': idx,
-                    'filename': filename,
-                    'status': 'complete',
-                    'domain': results.get('first_party', 'Unknown'),
-                    'total_entries': results.get('total_requests', 0),
-                    'vendors_detected': results.get('vendors_detected', 0),
-                    'vendors_with_pii': vendors_with_pii,
-                    'vendor_pii_count': total_vendor_pii,
+                    'event':             'file_done',
+                    'index':             idx,
+                    'filename':          filename,
+                    'status':            'complete',
+                    'domain':            results.get('first_party', 'Unknown'),
+                    'total_entries':     results.get('total_requests', 0),
+                    'vendors_detected':  results.get('vendors_detected', 0),
+                    'vendors_with_pii':  vendors_with_pii,
+                    'vendor_pii_count':  total_vendor_pii,
                     'first_party_pii_count': first_party_count,
-                    'leadid_detected': results.get('leadid_detected', False),
-                    'repair_used': repair_used,
-                    'current': idx + 1,
-                    'total': total,
-                    # Score card fields
+                    'leadid_detected':   results.get('leadid_detected', False),
+                    'repair_used':       repair_used,
+                    'current':           idx + 1,
+                    'total':             total,
                     'score':             risk['score'],
                     'grade':             risk['grade'],
                     'grade_label':       risk['grade_label'],
@@ -1684,30 +1687,21 @@ def analyze_bulk():
                 summaries.append(summary)
             finally:
                 try:
-                    del har_text, har_text_clean, har_data
-                except Exception:
-                    pass
-                try:
                     del results
                 except Exception:
                     pass
 
             yield f"data: {json.dumps(summary)}\n\n"
 
-        # Final event — all files done
-        done_event = json.dumps({
-            'event': 'all_done',
-            'files_processed': len(summaries),
-            'summaries': summaries,
-        })
-        yield f"data: {done_event}\n\n"
+        # All done
+        yield f"data: {json.dumps({'event': 'all_done', 'files_processed': len(summaries), 'summaries': summaries})}\n\n"
 
     return app.response_class(
-        generate(buffered),
+        generate(temp_files),
         mimetype='text/event-stream',
         headers={
             'Cache-Control': 'no-cache',
-            'X-Accel-Buffering': 'no',   # Disable Nginx buffering on Render
+            'X-Accel-Buffering': 'no',
         }
     )
 
