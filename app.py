@@ -2,8 +2,16 @@
 HAR Privacy Analyzer - Application Entry Point
 """
 
-from backend import app
 import os
+
+# Load .env file for local development (no-op in production where env vars are set directly)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed — env vars must be set manually
+
+from backend import app
 
 if __name__ == '__main__':
     if not os.path.exists('static'):

@@ -8,8 +8,46 @@ import json
 import re
 import base64
 from urllib.parse import urlparse, parse_qs, unquote, unquote_plus
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import os
+import uuid
+
+# ── MongoDB ───────────────────────────────────────────────────────────────────
+try:
+    from pymongo import MongoClient, DESCENDING
+    from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+    MONGO_URI = os.environ.get('MONGODB_URI', '')
+    if MONGO_URI:
+        _mongo_client = MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+        )
+        # Verify connection on startup
+        _mongo_client.admin.command('ping')
+        _db = _mongo_client['har_analyzer']
+
+        # Collections
+        _col_single = _db['single_analyses']
+        _col_bulk   = _db['bulk_rankings']
+
+        # TTL index: auto-expire documents after 90 days
+        _col_single.create_index('created_at', expireAfterSeconds=7776000)
+        _col_bulk.create_index('created_at',   expireAfterSeconds=7776000)
+
+        # Query indexes
+        _col_single.create_index([('created_at', DESCENDING)])
+        _col_bulk.create_index([('created_at', DESCENDING)])
+
+        MONGO_ENABLED = True
+        print('✅ MongoDB connected — OceansEdge cluster')
+    else:
+        MONGO_ENABLED = False
+        print('⚠️  MONGODB_URI not set — history will not be persisted')
+except Exception as _mongo_err:
+    MONGO_ENABLED = False
+    print(f'⚠️  MongoDB connection failed — history disabled: {_mongo_err}')
+# ─────────────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__, static_folder='static')
 
@@ -1197,6 +1235,110 @@ def analyze_har_simple(har_data):
         'session_date':  session_date,
     }
 
+
+def save_single_analysis(filename, results, risk):
+    """
+    Save a completed single-file analysis summary to MongoDB.
+    Non-fatal: if MongoDB is unavailable, logs and returns None.
+    Returns the analysis_id string so the frontend can link to it.
+    """
+    if not MONGO_ENABLED:
+        return None
+    try:
+        analysis_id = str(uuid.uuid4())
+        vendors = results.get('vendors', {})
+
+        vendor_pii_summary = [
+            {
+                'vendor':     v['name'],
+                'pii_count':  v.get('pii_count', 0),
+                'pii_types':  list({p['type'] for p in v.get('pii', [])}),
+            }
+            for v in vendors.values()
+            if v.get('pii_count', 0) > 0
+        ]
+
+        doc = {
+            'analysis_id':           analysis_id,
+            'created_at':            datetime.now(timezone.utc),
+            'filename':              filename,
+            'domain':                results.get('first_party', 'Unknown'),
+            'total_requests':        results.get('total_requests', 0),
+            'vendors_detected':      results.get('vendors_detected', 0),
+            'leadid_detected':       results.get('leadid_detected', False),
+            'repair_used':           results.get('repair_used', False),
+            'first_party_pii_count': results.get('first_party_pii', {}).get('pii_count', 0),
+            'vendor_pii_count':      sum(v.get('pii_count', 0) for v in vendors.values()),
+            'vendor_pii_summary':    vendor_pii_summary,
+            # Risk score fields
+            'score':                 risk['score'],
+            'grade':                 risk['grade'],
+            'grade_label':           risk['grade_label'],
+            'estimated_damages':     risk['estimated_damages'],
+            'top_violations':        risk['top_violations'],
+            'breakdown':             risk['breakdown'],
+        }
+
+        _col_single.insert_one(doc)
+        print(f"✅ Single analysis saved to MongoDB: {analysis_id}")
+        return analysis_id
+
+    except Exception as e:
+        print(f"⚠️  MongoDB save failed (single): {e}")
+        return None
+
+
+def save_bulk_ranking(summaries):
+    """
+    Save a completed bulk ranking session to MongoDB.
+    Non-fatal: if MongoDB is unavailable, logs and returns None.
+    Returns the session_id string so the frontend can link to it.
+    """
+    if not MONGO_ENABLED:
+        return None
+    try:
+        session_id = str(uuid.uuid4())
+
+        # Only store completed files, sorted by score descending
+        completed = [s for s in summaries if s.get('status') == 'complete']
+        completed.sort(key=lambda x: x.get('score', 0), reverse=True)
+
+        ranked_results = [
+            {
+                'rank':              i + 1,
+                'filename':          s.get('filename', ''),
+                'domain':            s.get('domain', 'Unknown'),
+                'score':             s.get('score', 0),
+                'grade':             s.get('grade', 'lower'),
+                'grade_label':       s.get('grade_label', 'Lower Risk'),
+                'estimated_damages': s.get('estimated_damages', 0),
+                'top_violations':    s.get('top_violations', []),
+                'breakdown':         s.get('breakdown', {}),
+                'leadid_detected':   s.get('leadid_detected', False),
+                'total_requests':    s.get('total_entries', 0),
+                'vendors_detected':  s.get('vendors_detected', 0),
+                'vendor_pii_count':  s.get('vendor_pii_count', 0),
+            }
+            for i, s in enumerate(completed)
+        ]
+
+        doc = {
+            'session_id':     session_id,
+            'created_at':     datetime.now(timezone.utc),
+            'files_analyzed': len(completed),
+            'files_errored':  len(summaries) - len(completed),
+            'ranked_results': ranked_results,
+        }
+
+        _col_bulk.insert_one(doc)
+        print(f"✅ Bulk ranking saved to MongoDB: {session_id}")
+        return session_id
+
+    except Exception as e:
+        print(f"⚠️  MongoDB save failed (bulk): {e}")
+        return None
+
+
 @app.route('/')
 def index():
     """Serve the main HTML page"""
@@ -1206,6 +1348,139 @@ def index():
 def bulk():
     """Serve the bulk ranker page"""
     return send_from_directory('static', 'bulk.html')
+
+@app.route('/history')
+def history():
+    """Serve the analysis history page"""
+    return send_from_directory('static', 'history.html')
+
+# ── History API endpoints ────────────────────────────────────────────────────
+
+@app.route('/api/history/single', methods=['GET'])
+def api_history_single():
+    """Return list of past single-file analyses from MongoDB, newest first."""
+    if not MONGO_ENABLED:
+        return jsonify({'results': [], 'total': 0, 'db_enabled': False})
+    try:
+        docs = list(_col_single.find(
+            {},
+            {
+                '_id': 0,
+                'analysis_id': 1, 'created_at': 1, 'filename': 1, 'domain': 1,
+                'total_requests': 1, 'vendors_detected': 1, 'leadid_detected': 1,
+                'first_party_pii_count': 1, 'vendor_pii_count': 1,
+                'score': 1, 'grade': 1, 'grade_label': 1,
+                'estimated_damages': 1, 'top_violations': 1,
+            }
+        ).sort('created_at', DESCENDING).limit(200))
+
+        # Convert datetime to ISO string for JSON serialization
+        for doc in docs:
+            if 'created_at' in doc:
+                doc['created_at'] = doc['created_at'].isoformat()
+
+        return jsonify({'results': docs, 'total': len(docs), 'db_enabled': True})
+    except Exception as e:
+        print(f"⚠️  MongoDB query failed (single list): {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/history/single/<analysis_id>', methods=['GET'])
+def api_history_single_detail(analysis_id):
+    """Return full stored result for one single-file analysis."""
+    if not MONGO_ENABLED:
+        return jsonify({'error': 'Database not available'}), 503
+    try:
+        doc = _col_single.find_one(
+            {'analysis_id': analysis_id},
+            {'_id': 0}
+        )
+        if not doc:
+            return jsonify({'error': 'Analysis not found'}), 404
+        if 'created_at' in doc:
+            doc['created_at'] = doc['created_at'].isoformat()
+        return jsonify(doc)
+    except Exception as e:
+        print(f"⚠️  MongoDB query failed (single detail): {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/history/bulk', methods=['GET'])
+def api_history_bulk():
+    """Return list of past bulk ranking sessions from MongoDB, newest first."""
+    if not MONGO_ENABLED:
+        return jsonify({'results': [], 'total': 0, 'db_enabled': False})
+    try:
+        docs = list(_col_bulk.find(
+            {},
+            {
+                '_id': 0,
+                'session_id': 1, 'created_at': 1,
+                'files_analyzed': 1, 'files_errored': 1,
+                'ranked_results': 1,
+            }
+        ).sort('created_at', DESCENDING).limit(100))
+
+        for doc in docs:
+            if 'created_at' in doc:
+                doc['created_at'] = doc['created_at'].isoformat()
+
+        return jsonify({'results': docs, 'total': len(docs), 'db_enabled': True})
+    except Exception as e:
+        print(f"⚠️  MongoDB query failed (bulk list): {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/history/bulk/<session_id>', methods=['GET'])
+def api_history_bulk_detail(session_id):
+    """Return full stored result for one bulk ranking session."""
+    if not MONGO_ENABLED:
+        return jsonify({'error': 'Database not available'}), 503
+    try:
+        doc = _col_bulk.find_one(
+            {'session_id': session_id},
+            {'_id': 0}
+        )
+        if not doc:
+            return jsonify({'error': 'Session not found'}), 404
+        if 'created_at' in doc:
+            doc['created_at'] = doc['created_at'].isoformat()
+        return jsonify(doc)
+    except Exception as e:
+        print(f"⚠️  MongoDB query failed (bulk detail): {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/history/single/<analysis_id>', methods=['DELETE'])
+def api_delete_single(analysis_id):
+    """Delete a single-file analysis result from MongoDB."""
+    if not MONGO_ENABLED:
+        return jsonify({'error': 'Database not available'}), 503
+    try:
+        result = _col_single.delete_one({'analysis_id': analysis_id})
+        if result.deleted_count == 0:
+            return jsonify({'error': 'Analysis not found'}), 404
+        print(f"🗑  Single analysis deleted: {analysis_id}")
+        return jsonify({'deleted': True, 'analysis_id': analysis_id})
+    except Exception as e:
+        print(f"⚠️  MongoDB delete failed (single): {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/history/bulk/<session_id>', methods=['DELETE'])
+def api_delete_bulk(session_id):
+    """Delete a bulk ranking session from MongoDB."""
+    if not MONGO_ENABLED:
+        return jsonify({'error': 'Database not available'}), 503
+    try:
+        result = _col_bulk.delete_one({'session_id': session_id})
+        if result.deleted_count == 0:
+            return jsonify({'error': 'Session not found'}), 404
+        print(f"🗑  Bulk session deleted: {session_id}")
+        return jsonify({'deleted': True, 'session_id': session_id})
+    except Exception as e:
+        print(f"⚠️  MongoDB delete failed (bulk): {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -1347,6 +1622,12 @@ def analyze():
         else:
             results['repair_used'] = False
             results['plaintext_supplement_used'] = False
+        
+        # Save to MongoDB and attach analysis_id so frontend can link to history
+        risk = compute_risk_score(results)
+        analysis_id = save_single_analysis(file.filename, results, risk)
+        if analysis_id:
+            results['analysis_id'] = analysis_id
         
         return jsonify(results)
     
@@ -1727,8 +2008,11 @@ def analyze_bulk():
 
             yield f"data: {json.dumps(summary)}\n\n"
 
+        # Save bulk session to MongoDB before emitting all_done
+        session_id = save_bulk_ranking(summaries)
+
         # All done
-        yield f"data: {json.dumps({'event': 'all_done', 'files_processed': len(summaries), 'summaries': summaries})}\n\n"
+        yield f"data: {json.dumps({'event': 'all_done', 'files_processed': len(summaries), 'summaries': summaries, 'session_id': session_id})}\n\n"
 
     return app.response_class(
         generate(temp_files),

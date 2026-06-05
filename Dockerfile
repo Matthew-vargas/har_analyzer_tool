@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -14,6 +14,7 @@ COPY app.py .
 RUN mkdir -p static
 COPY static/index.html static/index.html
 COPY static/bulk.html static/bulk.html
+COPY static/history.html static/history.html
 
 # Expose port (Render overrides with PORT env var)
 EXPOSE 5000

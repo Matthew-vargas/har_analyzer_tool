@@ -812,6 +812,7 @@
         <div class="topnav-links">
             <a href="/" class="nav-link active">Single File</a>
             <a href="/bulk" class="nav-link">Bulk Ranker</a>
+            <a href="/history" class="nav-link">History</a>
         </div>
     </div>
 
@@ -930,6 +931,7 @@
                 }
                 
                 displayResults(data);
+                showSavedBanner(data.analysis_id);
             } catch (error) {
                 console.error('Error:', error);
                 showError(`Error: ${error.message}`);
@@ -1351,6 +1353,40 @@
                 element.style.display = 'none';
                 button.textContent = button.textContent.replace('▲', '▼');
             }
+        }
+
+        function showSavedBanner(analysisId) {
+            if (!analysisId) return;
+            // Remove any existing banner
+            const existing = document.getElementById('savedBanner');
+            if (existing) existing.remove();
+
+            const banner = document.createElement('div');
+            banner.id = 'savedBanner';
+            banner.style.cssText = `
+                position: fixed; bottom: 24px; right: 24px; z-index: 999;
+                background: #1f2436; border: 1px solid #343d5c;
+                border-left: 3px solid #4caf7d;
+                border-radius: 8px; padding: 14px 18px;
+                display: flex; align-items: center; gap: 12px;
+                font-family: 'IBM Plex Sans', sans-serif;
+                color: #e2e6f3; font-size: 0.88em;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+                animation: bannerIn 0.3s ease-out;
+            `;
+            banner.innerHTML = `
+                <span style="font-size:1.2em">✅</span>
+                <span>Result saved to history</span>
+                <a href="/history" style="color:#7c6ff7;text-decoration:none;font-weight:600;white-space:nowrap;">View History →</a>
+                <button onclick="this.parentElement.remove()"
+                        style="background:none;border:none;color:#4a5578;cursor:pointer;font-size:1.1em;padding:0 0 0 4px;">✕</button>
+            `;
+
+            const style = document.createElement('style');
+            style.textContent = '@keyframes bannerIn { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }';
+            document.head.appendChild(style);
+            document.body.appendChild(banner);
+            setTimeout(() => banner.style.opacity === '1' && banner.remove(), 8000);
         }
 
         function copyTimeline() {

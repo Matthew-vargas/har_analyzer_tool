@@ -1,0 +1,1283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analysis History — HAR Privacy Analyzer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg:           #0f1117;
+            --surface:      #181c27;
+            --surface-2:    #1f2436;
+            --border:       #2a3050;
+            --border-light: #343d5c;
+            --purple:       #7c6ff7;
+            --purple-dim:   #4a4480;
+            --purple-glow:  rgba(124, 111, 247, 0.12);
+            --red:          #e05c5c;
+            --orange:       #e08a3c;
+            --yellow:       #d4b84a;
+            --green:        #4caf7d;
+            --text:         #e2e6f3;
+            --text-dim:     #8892b0;
+            --text-faint:   #4a5578;
+            --mono:         'IBM Plex Mono', monospace;
+            --sans:         'IBM Plex Sans', sans-serif;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: var(--sans);
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        /* ── NAV ─────────────────────────────────────────────── */
+        .topnav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 32px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .topnav-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-family: var(--mono);
+            font-weight: 600;
+            font-size: 0.95em;
+            color: var(--purple);
+            text-decoration: none;
+        }
+
+        .topnav-brand .icon {
+            width: 30px;
+            height: 30px;
+            background: var(--purple);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1em;
+        }
+
+        .topnav-links {
+            display: flex;
+            gap: 4px;
+        }
+
+        .nav-link {
+            padding: 7px 16px;
+            border-radius: 6px;
+            font-size: 0.88em;
+            font-weight: 500;
+            text-decoration: none;
+            color: var(--text-dim);
+            transition: all 0.15s;
+            border: 1px solid transparent;
+        }
+
+        .nav-link:hover { color: var(--text); background: var(--surface-2); }
+
+        .nav-link.active {
+            color: var(--purple);
+            background: var(--purple-glow);
+            border-color: var(--purple-dim);
+        }
+
+        /* ── PAGE LAYOUT ─────────────────────────────────────── */
+        .page {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 48px 24px 80px;
+        }
+
+        .page-header {
+            margin-bottom: 36px;
+        }
+
+        .page-header .eyebrow {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            font-weight: 600;
+            color: var(--purple);
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .page-header h1 {
+            font-size: 2em;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 8px;
+        }
+
+        .page-header p {
+            font-size: 0.95em;
+            color: var(--text-dim);
+        }
+
+        /* ── TABS ────────────────────────────────────────────── */
+        .tab-bar {
+            display: flex;
+            gap: 2px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 28px;
+        }
+
+        .tab-btn {
+            padding: 10px 24px;
+            font-family: var(--sans);
+            font-size: 0.9em;
+            font-weight: 500;
+            color: var(--text-dim);
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tab-btn:hover { color: var(--text); }
+
+        .tab-btn.active {
+            color: var(--purple);
+            border-bottom-color: var(--purple);
+        }
+
+        .tab-count {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            padding: 1px 7px;
+            border-radius: 10px;
+        }
+
+        .tab-btn.active .tab-count {
+            background: var(--purple-glow);
+            border-color: var(--purple-dim);
+            color: var(--purple);
+        }
+
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
+        /* ── TOOLBAR ─────────────────────────────────────────── */
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .search-input {
+            flex: 1;
+            max-width: 320px;
+            padding: 8px 14px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: var(--sans);
+            font-size: 0.88em;
+            color: var(--text);
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        .search-input::placeholder { color: var(--text-faint); }
+        .search-input:focus { border-color: var(--purple); }
+
+        .sort-select {
+            padding: 8px 12px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-family: var(--sans);
+            font-size: 0.88em;
+            color: var(--text-dim);
+            outline: none;
+            cursor: pointer;
+        }
+
+        .results-count {
+            font-family: var(--mono);
+            font-size: 0.78em;
+            color: var(--text-faint);
+            margin-left: auto;
+        }
+
+        /* ── RESULT CARDS ────────────────────────────────────── */
+        .results-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .result-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 18px 20px;
+            display: grid;
+            grid-template-columns: 56px 1fr auto auto auto;
+            gap: 12px;
+            align-items: center;
+            text-decoration: none;
+            color: inherit;
+            transition: border-color 0.15s, background 0.15s;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .result-card:hover {
+            border-color: var(--border-light);
+            background: var(--surface-2);
+        }
+
+        .result-card.grade-critical { border-left: 3px solid var(--red); }
+        .result-card.grade-high     { border-left: 3px solid var(--orange); }
+        .result-card.grade-elevated { border-left: 3px solid var(--yellow); }
+        .result-card.grade-lower    { border-left: 3px solid var(--green); }
+
+        /* Score circle */
+        .score-circle {
+            width: 52px;
+            height: 52px;
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid;
+            flex-shrink: 0;
+        }
+
+        .score-circle.grade-critical { border-color: var(--red);    color: var(--red); }
+        .score-circle.grade-high     { border-color: var(--orange);  color: var(--orange); }
+        .score-circle.grade-elevated { border-color: var(--yellow);  color: var(--yellow); }
+        .score-circle.grade-lower    { border-color: var(--green);   color: var(--green); }
+
+        .score-num {
+            font-family: var(--mono);
+            font-size: 1.1em;
+            font-weight: 700;
+            line-height: 1;
+        }
+
+        .score-label {
+            font-family: var(--mono);
+            font-size: 0.55em;
+            color: var(--text-faint);
+            margin-top: 2px;
+        }
+
+        /* Card body */
+        .card-body { min-width: 0; }
+
+        .card-title {
+            font-weight: 600;
+            font-size: 1em;
+            color: var(--text);
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .card-filename {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            color: var(--text-faint);
+            margin-bottom: 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .card-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .meta-tag {
+            font-size: 0.78em;
+            color: var(--text-dim);
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        .meta-tag.pii    { color: var(--orange); border-color: rgba(224,138,60,0.3); background: rgba(224,138,60,0.08); }
+        .meta-tag.leadid { color: var(--orange); border-color: rgba(224,138,60,0.3); background: rgba(224,138,60,0.08); }
+        .meta-tag.damage { color: var(--red);    border-color: rgba(224,92,92,0.3);  background: rgba(224,92,92,0.08); }
+        .meta-tag.clean  { color: var(--green);  border-color: rgba(76,175,125,0.3); background: rgba(76,175,125,0.08); }
+
+        /* Card right column */
+        .card-right {
+            text-align: right;
+            flex-shrink: 0;
+        }
+
+        .card-date {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            color: var(--text-faint);
+            margin-bottom: 8px;
+            white-space: nowrap;
+        }
+
+        .card-grade {
+            font-family: var(--mono);
+            font-size: 0.72em;
+            font-weight: 700;
+            padding: 3px 9px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .card-grade.grade-critical { background: rgba(224,92,92,0.15);  color: var(--red);    border: 1px solid rgba(224,92,92,0.3); }
+        .card-grade.grade-high     { background: rgba(224,138,60,0.15); color: var(--orange); border: 1px solid rgba(224,138,60,0.3); }
+        .card-grade.grade-elevated { background: rgba(212,184,74,0.15); color: var(--yellow); border: 1px solid rgba(212,184,74,0.3); }
+        .card-grade.grade-lower    { background: rgba(76,175,125,0.15); color: var(--green);  border: 1px solid rgba(76,175,125,0.3); }
+
+        /* ── BULK SESSION CARDS ──────────────────────────────── */
+        .bulk-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 10px;
+            transition: border-color 0.15s;
+            position: relative;
+        }
+
+        .bulk-card:hover { border-color: var(--border-light); }
+
+        .bulk-card-header {
+            padding: 18px 20px;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 16px;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .bulk-session-title {
+            font-weight: 600;
+            font-size: 1em;
+            margin-bottom: 4px;
+        }
+
+        .bulk-session-meta {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .bulk-card-toggle {
+            font-family: var(--mono);
+            font-size: 0.8em;
+            color: var(--text-faint);
+            transition: transform 0.2s;
+        }
+
+        .bulk-card.open .bulk-card-toggle {
+            transform: rotate(180deg);
+        }
+
+        .bulk-card-body {
+            display: none;
+            border-top: 1px solid var(--border);
+        }
+
+        .bulk-card.open .bulk-card-body { display: block; }
+
+        .bulk-ranked-row {
+            display: grid;
+            grid-template-columns: 36px 28px 1fr auto;
+            gap: 12px;
+            align-items: center;
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.88em;
+        }
+
+        .bulk-ranked-row:last-child { border-bottom: none; }
+
+        .bulk-rank-num {
+            font-family: var(--mono);
+            font-size: 0.8em;
+            color: var(--text-faint);
+            text-align: center;
+        }
+
+        .bulk-score-pill {
+            font-family: var(--mono);
+            font-size: 0.78em;
+            font-weight: 600;
+            text-align: center;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        .bulk-score-pill.grade-critical { background: rgba(224,92,92,0.15);  color: var(--red); }
+        .bulk-score-pill.grade-high     { background: rgba(224,138,60,0.15); color: var(--orange); }
+        .bulk-score-pill.grade-elevated { background: rgba(212,184,74,0.15); color: var(--yellow); }
+        .bulk-score-pill.grade-lower    { background: rgba(76,175,125,0.15); color: var(--green); }
+
+        .bulk-file-name {
+            font-family: var(--mono);
+            font-size: 0.82em;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .bulk-file-domain {
+            font-size: 0.78em;
+            color: var(--text-dim);
+            margin-top: 2px;
+        }
+
+        .bulk-damages {
+            font-family: var(--mono);
+            font-size: 0.78em;
+            color: var(--text-dim);
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .bulk-damages.has-damage { color: var(--red); }
+
+        /* ── EMPTY STATE ─────────────────────────────────────── */
+        .empty-state {
+            text-align: center;
+            padding: 64px 24px;
+            border: 1px dashed var(--border-light);
+            border-radius: 10px;
+            background: var(--surface-2);
+        }
+
+        .empty-icon { font-size: 2.5em; margin-bottom: 16px; opacity: 0.4; }
+        .empty-title { font-size: 1.1em; font-weight: 600; margin-bottom: 8px; }
+        .empty-desc { font-size: 0.88em; color: var(--text-dim); margin-bottom: 24px; }
+
+        .btn-go {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 22px;
+            background: var(--purple);
+            color: white;
+            border-radius: 7px;
+            text-decoration: none;
+            font-size: 0.9em;
+            font-weight: 600;
+            transition: background 0.15s;
+        }
+
+        .btn-go:hover { background: #9589ff; }
+
+        /* ── LOADING STATE ───────────────────────────────────── */
+        .loading-state {
+            text-align: center;
+            padding: 48px;
+        }
+
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--border);
+            border-top-color: var(--purple);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .loading-text { font-size: 0.88em; color: var(--text-dim); }
+
+        /* ── DETAIL MODAL ────────────────────────────────────── */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            backdrop-filter: blur(4px);
+            z-index: 200;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .modal-overlay.open { display: flex; }
+
+        .modal {
+            background: var(--surface);
+            border: 1px solid var(--border-light);
+            border-radius: 14px;
+            max-width: 720px;
+            width: 100%;
+            max-height: 85vh;
+            overflow-y: auto;
+            padding: 28px;
+            position: relative;
+            animation: modalIn 0.2s ease-out;
+        }
+
+        @keyframes modalIn {
+            from { opacity: 0; transform: scale(0.97) translateY(-8px); }
+            to   { opacity: 1; transform: scale(1) translateY(0); }
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 16px; right: 16px;
+            background: none;
+            border: none;
+            font-size: 1.2em;
+            color: var(--text-faint);
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: color 0.15s, background 0.15s;
+        }
+
+        .modal-close:hover { color: var(--text); background: var(--surface-2); }
+
+        .modal-eyebrow {
+            font-family: var(--mono);
+            font-size: 0.72em;
+            color: var(--purple);
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .modal-title {
+            font-size: 1.3em;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .modal-filename {
+            font-family: var(--mono);
+            font-size: 0.78em;
+            color: var(--text-faint);
+            margin-bottom: 20px;
+        }
+
+        .modal-section {
+            border-top: 1px solid var(--border);
+            padding-top: 16px;
+            margin-top: 16px;
+        }
+
+        .modal-section-title {
+            font-family: var(--mono);
+            font-size: 0.72em;
+            font-weight: 600;
+            color: var(--text-faint);
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-bottom: 4px;
+        }
+
+        .stat-box {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            padding: 12px 14px;
+        }
+
+        .stat-val {
+            font-family: var(--mono);
+            font-size: 1.2em;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 3px;
+        }
+
+        .stat-label {
+            font-size: 0.78em;
+            color: var(--text-dim);
+        }
+
+        .violation-list { list-style: none; }
+
+        .violation-item {
+            padding: 7px 0;
+            font-size: 0.88em;
+            color: var(--text-dim);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            gap: 10px;
+        }
+
+        .violation-item:last-child { border-bottom: none; }
+        .violation-bullet { color: var(--red); flex-shrink: 0; }
+
+        /* Breakdown bars */
+        .breakdown-row {
+            display: grid;
+            grid-template-columns: 72px 1fr 40px;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .breakdown-label {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            color: var(--text-dim);
+        }
+
+        .breakdown-track {
+            height: 6px;
+            background: var(--border);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .breakdown-fill {
+            height: 100%;
+            border-radius: 3px;
+            background: var(--purple);
+        }
+
+        .breakdown-val {
+            font-family: var(--mono);
+            font-size: 0.72em;
+            color: var(--text-faint);
+            text-align: right;
+        }
+
+        .vendor-pill-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+        .vendor-pill {
+            font-size: 0.8em;
+            padding: 4px 10px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .vendor-pill .pii-badge {
+            font-family: var(--mono);
+            font-size: 0.72em;
+            background: rgba(224,92,92,0.15);
+            color: var(--red);
+            padding: 1px 5px;
+            border-radius: 3px;
+        }
+
+        /* ── DELETE BUTTON ──────────────────────────────────────── */
+        .delete-btn {
+            background: rgba(224,92,92,0.1);
+            border: 1px solid rgba(224,92,92,0.35);
+            color: var(--red);
+            cursor: pointer;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 0.85em;
+            transition: all 0.15s;
+            flex-shrink: 0;
+            white-space: nowrap;
+            line-height: 1;
+        }
+
+        .delete-btn:hover {
+            background: rgba(224,92,92,0.22);
+            border-color: rgba(224,92,92,0.6);
+            color: var(--red);
+        }
+
+        /* Confirm prompt — absolutely positioned so it overlays without disrupting grid */
+        .delete-confirm {
+            display: none;
+            position: absolute;
+            right: 60px;
+            top: 50%;
+            transform: translateY(-50%);
+            align-items: center;
+            gap: 8px;
+            background: var(--surface);
+            border: 1px solid rgba(224,92,92,0.4);
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 0.82em;
+            color: var(--text-dim);
+            z-index: 10;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+            white-space: nowrap;
+        }
+
+        .delete-confirm.visible { display: flex; }
+
+        .delete-confirm-yes {
+            background: var(--red);
+            color: white;
+            border: none;
+            padding: 3px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        .delete-confirm-no {
+            background: none;
+            border: none;
+            color: var(--text-faint);
+            cursor: pointer;
+            font-size: 0.85em;
+            padding: 3px 6px;
+        }
+
+        /* ── RESPONSIVE ──────────────────────────────────────── */
+        @media (max-width: 640px) {
+            .page { padding: 24px 16px 60px; }
+            .topnav { padding: 12px 16px; }
+            .result-card { grid-template-columns: 48px 1fr; }
+            .card-right { display: none; }
+            .stat-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── NAV ──────────────────────────────────────────────────── -->
+<nav class="topnav">
+    <a href="/" class="topnav-brand">
+        <div class="icon">🔍</div>
+        HAR Privacy Analyzer
+    </a>
+    <div class="topnav-links">
+        <a href="/"        class="nav-link">Single File</a>
+        <a href="/bulk"    class="nav-link">Bulk Ranker</a>
+        <a href="/history" class="nav-link active">History</a>
+    </div>
+</nav>
+
+<!-- ── PAGE ─────────────────────────────────────────────────── -->
+<div class="page">
+
+    <div class="page-header">
+        <div class="eyebrow">Analysis History</div>
+        <h1>Past Results</h1>
+        <p>Review completed analyses and bulk rankings. Results are retained for 90 days.</p>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tab-bar">
+        <button class="tab-btn active" onclick="switchTab('single')">
+            Single File Analyses
+            <span class="tab-count" id="singleCount">—</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('bulk')">
+            Bulk Rankings
+            <span class="tab-count" id="bulkCount">—</span>
+        </button>
+    </div>
+
+    <!-- Single File Panel -->
+    <div class="tab-panel active" id="panel-single">
+        <div class="toolbar">
+            <input class="search-input" type="text" id="singleSearch"
+                   placeholder="Search by domain or filename…"
+                   oninput="filterSingle()">
+            <select class="sort-select" id="singleSort" onchange="filterSingle()">
+                <option value="date_desc">Newest first</option>
+                <option value="date_asc">Oldest first</option>
+                <option value="score_desc">Highest risk first</option>
+                <option value="score_asc">Lowest risk first</option>
+            </select>
+            <span class="results-count" id="singleResultsCount"></span>
+        </div>
+        <div class="results-list" id="singleList">
+            <div class="loading-state">
+                <div class="spinner"></div>
+                <div class="loading-text">Loading analyses…</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bulk Rankings Panel -->
+    <div class="tab-panel" id="panel-bulk">
+        <div class="toolbar">
+            <input class="search-input" type="text" id="bulkSearch"
+                   placeholder="Search by filename or domain…"
+                   oninput="filterBulk()">
+            <select class="sort-select" id="bulkSort" onchange="filterBulk()">
+                <option value="date_desc">Newest first</option>
+                <option value="date_asc">Oldest first</option>
+                <option value="files_desc">Most files first</option>
+            </select>
+            <span class="results-count" id="bulkResultsCount"></span>
+        </div>
+        <div id="bulkList">
+            <div class="loading-state">
+                <div class="spinner"></div>
+                <div class="loading-text">Loading sessions…</div>
+            </div>
+        </div>
+    </div>
+
+</div><!-- /page -->
+
+<!-- ── DETAIL MODAL ──────────────────────────────────────────── -->
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
+    <div class="modal" id="modalContent">
+        <button class="modal-close" onclick="closeModal()">✕</button>
+        <div id="modalBody">Loading…</div>
+    </div>
+</div>
+
+<script>
+    // ── State ─────────────────────────────────────────────────
+    let allSingle = [];
+    let allBulk   = [];
+    let activeTab = 'single';
+
+    // ── Tab switching ─────────────────────────────────────────
+    function switchTab(tab) {
+        activeTab = tab;
+        document.querySelectorAll('.tab-btn').forEach((btn, i) => {
+            btn.classList.toggle('active', (i === 0 && tab === 'single') || (i === 1 && tab === 'bulk'));
+        });
+        document.getElementById('panel-single').classList.toggle('active', tab === 'single');
+        document.getElementById('panel-bulk').classList.toggle('active', tab === 'bulk');
+    }
+
+    // ── Fetch data on load ────────────────────────────────────
+    async function loadData() {
+        await Promise.all([loadSingle(), loadBulk()]);
+    }
+
+    async function loadSingle() {
+        try {
+            const res = await fetch('/api/history/single');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            allSingle = data.results || [];
+            document.getElementById('singleCount').textContent = allSingle.length;
+            renderSingle(allSingle);
+        } catch (err) {
+            document.getElementById('singleList').innerHTML = renderError(err.message);
+        }
+    }
+
+    async function loadBulk() {
+        try {
+            const res = await fetch('/api/history/bulk');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            allBulk = data.results || [];
+            document.getElementById('bulkCount').textContent = allBulk.length;
+            renderBulk(allBulk);
+        } catch (err) {
+            document.getElementById('bulkList').innerHTML = renderError(err.message);
+        }
+    }
+
+    // ── Filter + sort ─────────────────────────────────────────
+    function filterSingle() {
+        const q    = document.getElementById('singleSearch').value.toLowerCase();
+        const sort = document.getElementById('singleSort').value;
+
+        let filtered = allSingle.filter(r =>
+            (r.domain   || '').toLowerCase().includes(q) ||
+            (r.filename || '').toLowerCase().includes(q)
+        );
+
+        filtered.sort((a, b) => {
+            if (sort === 'date_desc')  return new Date(b.created_at) - new Date(a.created_at);
+            if (sort === 'date_asc')   return new Date(a.created_at) - new Date(b.created_at);
+            if (sort === 'score_desc') return (b.score || 0) - (a.score || 0);
+            if (sort === 'score_asc')  return (a.score || 0) - (b.score || 0);
+            return 0;
+        });
+
+        document.getElementById('singleResultsCount').textContent =
+            filtered.length !== allSingle.length ? `${filtered.length} of ${allSingle.length}` : `${allSingle.length} total`;
+        renderSingle(filtered);
+    }
+
+    function filterBulk() {
+        const q    = document.getElementById('bulkSearch').value.toLowerCase();
+        const sort = document.getElementById('bulkSort').value;
+
+        let filtered = allBulk.filter(session =>
+            (session.ranked_results || []).some(r =>
+                (r.domain   || '').toLowerCase().includes(q) ||
+                (r.filename || '').toLowerCase().includes(q)
+            ) || q === ''
+        );
+
+        filtered.sort((a, b) => {
+            if (sort === 'date_desc')  return new Date(b.created_at) - new Date(a.created_at);
+            if (sort === 'date_asc')   return new Date(a.created_at) - new Date(b.created_at);
+            if (sort === 'files_desc') return (b.files_analyzed || 0) - (a.files_analyzed || 0);
+            return 0;
+        });
+
+        document.getElementById('bulkResultsCount').textContent =
+            filtered.length !== allBulk.length ? `${filtered.length} of ${allBulk.length}` : `${allBulk.length} total`;
+        renderBulk(filtered);
+    }
+
+    // ── Render single analyses ────────────────────────────────
+    function renderSingle(items) {
+        const container = document.getElementById('singleList');
+
+        if (items.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-icon">📂</div>
+                    <div class="empty-title">${allSingle.length === 0 ? 'No analyses yet' : 'No matches'}</div>
+                    <div class="empty-desc">${allSingle.length === 0
+                        ? 'Run a HAR file analysis and your results will appear here.'
+                        : 'Try a different search term.'}</div>
+                    ${allSingle.length === 0 ? '<a href="/" class="btn-go">▶ Analyze a file</a>' : ''}
+                </div>`;
+            return;
+        }
+
+        container.innerHTML = items.map(r => {
+            const grade      = r.grade || 'lower';
+            const score      = r.score ?? 0;
+            const damages    = r.estimated_damages || 0;
+            const piiTotal   = (r.vendor_pii_count || 0) + (r.first_party_pii_count || 0);
+            const dateStr    = formatDate(r.created_at);
+
+            return `
+                <div class="result-card grade-${grade}" onclick="openSingleDetail('${r.analysis_id}')">
+                    <div class="score-circle grade-${grade}">
+                        <div class="score-num">${score}</div>
+                        <div class="score-label">/ 100</div>
+                    </div>
+                    <div class="card-body">
+                        <div class="card-title">${escHtml((r.domain && r.domain !== 'Unknown') ? r.domain : r.filename)}</div>
+                        <div class="card-filename">${escHtml(r.filename)}</div>
+                        <div class="card-meta">
+                            <span class="meta-tag">${r.total_requests || 0} requests</span>
+                            <span class="meta-tag">${r.vendors_detected || 0} vendors</span>
+                            ${piiTotal > 0
+                                ? `<span class="meta-tag pii">${piiTotal} PII item${piiTotal !== 1 ? 's' : ''}</span>`
+                                : `<span class="meta-tag clean">No PII detected</span>`}
+                            ${r.leadid_detected ? '<span class="meta-tag leadid">LeadID</span>' : ''}
+                            ${damages > 0 ? `<span class="meta-tag damage">$${damages.toLocaleString()}</span>` : ''}
+                        </div>
+                    </div>
+                    <div class="card-right">
+                        <div class="card-date">${dateStr}</div>
+                        <div class="card-grade grade-${grade}">${r.grade_label || 'Unknown'}</div>
+                    </div>
+                    <div class="delete-confirm" id="del-confirm-${r.analysis_id}">
+                        Delete this result?
+                        <button class="delete-confirm-yes" onclick="event.stopPropagation(); confirmDeleteSingle('${r.analysis_id}')">Delete</button>
+                        <button class="delete-confirm-no"  onclick="event.stopPropagation(); cancelDelete('${r.analysis_id}', 'single')">Cancel</button>
+                    </div>
+                    <button class="delete-btn" id="del-btn-${r.analysis_id}"
+                            onclick="event.stopPropagation(); showDeleteConfirm('${r.analysis_id}', 'single')"
+                            title="Delete this result">🗑</button>
+                </div>`;
+        }).join('');
+
+        document.getElementById('singleResultsCount').textContent = `${items.length} total`;
+    }
+
+    // ── Render bulk sessions ──────────────────────────────────
+    function renderBulk(sessions) {
+        const container = document.getElementById('bulkList');
+
+        if (sessions.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-icon">📊</div>
+                    <div class="empty-title">${allBulk.length === 0 ? 'No ranking sessions yet' : 'No matches'}</div>
+                    <div class="empty-desc">${allBulk.length === 0
+                        ? 'Run a bulk ranking and your sessions will appear here.'
+                        : 'Try a different search term.'}</div>
+                    ${allBulk.length === 0 ? '<a href="/bulk" class="btn-go">▶ Start ranking</a>' : ''}
+                </div>`;
+            return;
+        }
+
+        container.innerHTML = sessions.map(session => {
+            const ranked = session.ranked_results || [];
+            const top    = ranked[0];
+            const dateStr = formatDate(session.created_at);
+
+            return `
+                <div class="bulk-card" id="bulk-${session.session_id}">
+                    <div class="bulk-card-header" onclick="toggleBulk('${session.session_id}')">
+                        <div>
+                            <div class="bulk-session-title">
+                                ${session.files_analyzed} file${session.files_analyzed !== 1 ? 's' : ''} ranked
+                                ${top ? `— worst: <span style="color:var(--${top.grade === 'critical' ? 'red' : top.grade === 'high' ? 'orange' : 'text-dim'})">${escHtml((top.domain && top.domain !== 'Unknown') ? top.domain : top.filename)}</span>` : ''}
+                            </div>
+                            <div class="bulk-session-meta">
+                                <span class="meta-tag">${dateStr}</span>
+                                ${top ? `<span class="meta-tag ${top.grade === 'critical' || top.grade === 'high' ? 'pii' : ''}">${top.grade_label} — ${top.score}/100</span>` : ''}
+                            </div>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                        <div class="delete-confirm" id="del-confirm-${session.session_id}">
+                            Delete session?
+                            <button class="delete-confirm-yes" onclick="event.stopPropagation(); confirmDeleteBulk('${session.session_id}')">Delete</button>
+                            <button class="delete-confirm-no"  onclick="event.stopPropagation(); cancelDelete('${session.session_id}', 'bulk')">Cancel</button>
+                        </div>
+                        <button class="delete-btn" id="del-btn-${session.session_id}"
+                                onclick="event.stopPropagation(); showDeleteConfirm('${session.session_id}', 'bulk')"
+                                title="Delete this session">🗑</button>
+                        <div class="bulk-card-toggle">▼</div>
+                    </div>
+                    </div>
+                    <div class="bulk-card-body">
+                        ${ranked.map((r, i) => `
+                            <div class="bulk-ranked-row">
+                                <div class="bulk-rank-num">${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i+1}`}</div>
+                                <div class="bulk-score-pill grade-${r.grade}">${r.score}</div>
+                                <div>
+                                    <div class="bulk-file-name">${escHtml(r.filename)}</div>
+                                    <div class="bulk-file-domain">${escHtml(r.domain || '—')}
+                                        ${r.leadid_detected ? ' · <span style="color:var(--orange)">LeadID</span>' : ''}
+                                    </div>
+                                </div>
+                                <div class="bulk-damages ${(r.estimated_damages || 0) > 0 ? 'has-damage' : ''}">
+                                    ${(r.estimated_damages || 0) > 0 ? '$' + r.estimated_damages.toLocaleString() : '—'}
+                                </div>
+                            </div>`).join('')}
+                    </div>
+                </div>`;
+        }).join('');
+
+        document.getElementById('bulkResultsCount').textContent = `${sessions.length} total`;
+    }
+
+    // ── Toggle bulk card ──────────────────────────────────────
+    function toggleBulk(sessionId) {
+        const card = document.getElementById(`bulk-${sessionId}`);
+        card.classList.toggle('open');
+    }
+
+    // ── Single detail modal ───────────────────────────────────
+    async function openSingleDetail(analysisId) {
+        document.getElementById('modalOverlay').classList.add('open');
+        document.getElementById('modalBody').innerHTML = `
+            <div class="loading-state" style="padding:40px 0">
+                <div class="spinner"></div>
+                <div class="loading-text">Loading details…</div>
+            </div>`;
+
+        try {
+            const res  = await fetch(`/api/history/single/${analysisId}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            renderModal(data);
+        } catch (err) {
+            document.getElementById('modalBody').innerHTML = renderError(err.message);
+        }
+    }
+
+    function renderModal(r) {
+        const grade    = r.grade || 'lower';
+        const bk       = r.breakdown || {};
+        const vendors  = r.vendor_pii_summary || [];
+        const viols    = r.top_violations || [];
+        const piiTotal = (r.vendor_pii_count || 0) + (r.first_party_pii_count || 0);
+
+        const breakdownItems = [
+            { label: 'Plaintext', val: bk.plaintext  || 0 },
+            { label: 'Hashed',    val: bk.hashed     || 0 },
+            { label: 'Damages',   val: bk.damages     || 0 },
+            { label: 'Vendors',   val: bk.vendors     || 0 },
+            { label: 'Factors',   val: bk.aggravating || 0 },
+        ];
+
+        document.getElementById('modalBody').innerHTML = `
+            <div class="modal-eyebrow">Single File Analysis · ${formatDate(r.created_at)}</div>
+            <div class="modal-title">${escHtml(r.domain || 'Unknown domain')}</div>
+            <div class="modal-filename">${escHtml(r.filename)}</div>
+
+            <div class="stat-grid">
+                <div class="stat-box">
+                    <div class="stat-val" style="color:var(--${grade === 'critical' ? 'red' : grade === 'high' ? 'orange' : grade === 'elevated' ? 'yellow' : 'green'})">${r.score ?? 0}/100</div>
+                    <div class="stat-label">${r.grade_label || 'Unknown'}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val" style="color:var(--red)">${(r.estimated_damages || 0) > 0 ? '$' + (r.estimated_damages).toLocaleString() : '—'}</div>
+                    <div class="stat-label">Est. Damages</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val">${piiTotal}</div>
+                    <div class="stat-label">PII Items</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val">${r.total_requests || 0}</div>
+                    <div class="stat-label">Requests</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val">${r.vendors_detected || 0}</div>
+                    <div class="stat-label">Vendors</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val">${r.leadid_detected ? '⚠️ Yes' : '✓ No'}</div>
+                    <div class="stat-label">LeadID</div>
+                </div>
+            </div>
+
+            ${viols.length > 0 ? `
+            <div class="modal-section">
+                <div class="modal-section-title">Top Violations</div>
+                <ul class="violation-list">
+                    ${viols.map(v => `
+                        <li class="violation-item">
+                            <span class="violation-bullet">•</span>
+                            <span>${escHtml(v)}</span>
+                        </li>`).join('')}
+                </ul>
+            </div>` : ''}
+
+            ${vendors.length > 0 ? `
+            <div class="modal-section">
+                <div class="modal-section-title">Vendors with PII</div>
+                <div class="vendor-pill-row">
+                    ${vendors.map(v => `
+                        <div class="vendor-pill">
+                            ${escHtml(v.vendor)}
+                            ${v.pii_count > 0 ? `<span class="pii-badge">${v.pii_count} PII</span>` : ''}
+                        </div>`).join('')}
+                </div>
+            </div>` : ''}
+
+            <div class="modal-section">
+                <div class="modal-section-title">Score Breakdown</div>
+                ${breakdownItems.map(b => `
+                    <div class="breakdown-row">
+                        <div class="breakdown-label">${b.label}</div>
+                        <div class="breakdown-track">
+                            <div class="breakdown-fill" style="width:${b.val}%"></div>
+                        </div>
+                        <div class="breakdown-val">${b.val}</div>
+                    </div>`).join('')}
+            </div>`;
+    }
+
+    function closeModal(e) {
+        if (e && e.target !== document.getElementById('modalOverlay')) return;
+        document.getElementById('modalOverlay').classList.remove('open');
+    }
+
+    // Close on Escape
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') document.getElementById('modalOverlay').classList.remove('open');
+    });
+
+    // ── Helpers ───────────────────────────────────────────────
+    function formatDate(iso) {
+        if (!iso) return '—';
+        try {
+            return new Date(iso).toLocaleDateString('en-US', {
+                month: 'short', day: 'numeric', year: 'numeric',
+                hour: '2-digit', minute: '2-digit'
+            });
+        } catch { return iso; }
+    }
+
+    function escHtml(str) {
+        const d = document.createElement('div');
+        d.textContent = str || '';
+        return d.innerHTML;
+    }
+
+    function renderError(msg) {
+        return `
+            <div class="empty-state">
+                <div class="empty-icon">⚠️</div>
+                <div class="empty-title">Could not load results</div>
+                <div class="empty-desc">${escHtml(msg)}</div>
+            </div>`;
+    }
+
+    // ── Delete helpers ───────────────────────────────────────
+    function showDeleteConfirm(id, type) {
+        document.querySelectorAll('.delete-confirm.visible').forEach(el => {
+            el.classList.remove('visible');
+        });
+        const confirm = document.getElementById(`del-confirm-${id}`);
+        const btn     = document.getElementById(`del-btn-${id}`);
+        if (confirm) confirm.classList.add('visible');
+        if (btn)     btn.style.opacity = '0';
+    }
+
+    function cancelDelete(id, type) {
+        const confirm = document.getElementById(`del-confirm-${id}`);
+        const btn     = document.getElementById(`del-btn-${id}`);
+        if (confirm) confirm.classList.remove('visible');
+        if (btn)     btn.style.opacity = '';
+    }
+
+    async function confirmDeleteSingle(analysisId) {
+        try {
+            const res = await fetch(`/api/history/single/${analysisId}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            allSingle = allSingle.filter(r => r.analysis_id !== analysisId);
+            document.getElementById('singleCount').textContent = allSingle.length;
+            filterSingle();
+        } catch (err) {
+            alert(`Could not delete: ${err.message}`);
+        }
+    }
+
+    async function confirmDeleteBulk(sessionId) {
+        try {
+            const res = await fetch(`/api/history/bulk/${sessionId}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            allBulk = allBulk.filter(s => s.session_id !== sessionId);
+            document.getElementById('bulkCount').textContent = allBulk.length;
+            filterBulk();
+        } catch (err) {
+            alert(`Could not delete: ${err.message}`);
+        }
+    }
+
+    // ── Init ──────────────────────────────────────────────────
+    loadData();
+</script>
+</body>
+</html>

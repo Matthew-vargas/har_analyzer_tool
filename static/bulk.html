@@ -983,6 +983,11 @@
             .sc-identity { width: 100%; }
         }
 
+        @keyframes bannerIn {
+            from { opacity: 0; transform: translateY(12px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
         /* ── RESPONSIVE ──────────────────────────────────────── */
         @media (max-width: 640px) {
             .steps-grid    { grid-template-columns: 1fr; }
@@ -1003,6 +1008,7 @@
     <div class="topnav-links">
         <a href="/" class="nav-link">Single File</a>
         <a href="/bulk" class="nav-link active">Bulk Ranker</a>
+        <a href="/history" class="nav-link">History</a>
     </div>
 </nav>
 
@@ -1330,7 +1336,10 @@
                     else if (evt.event === 'all_done') {
                         setProgressBar(evt.total || validFiles.length, evt.total || validFiles.length, 'done');
                         setProgressLabel('All files analyzed');
-                        setTimeout(() => showCompletionMessage(evt), 600);
+                        setTimeout(() => {
+                            showCompletionMessage(evt);
+                            showSavedBanner(evt.session_id);
+                        }, 600);
                     }
                 }
             }
@@ -1549,6 +1558,35 @@
                 <div class="err-msg">${escHtml(msg)}</div>
                 <div class="err-hint">Check that your HAR files are valid and under 100MB, then try again.</div>
             </div>`;
+    }
+
+    // ── Saved banner ──────────────────────────────────────────
+    function showSavedBanner(sessionId) {
+        if (!sessionId) return;
+        const existing = document.getElementById('savedBanner');
+        if (existing) existing.remove();
+
+        const banner = document.createElement('div');
+        banner.id = 'savedBanner';
+        banner.style.cssText = `
+            position: fixed; bottom: 24px; right: 24px; z-index: 999;
+            background: var(--surface-2); border: 1px solid var(--border-light);
+            border-left: 3px solid var(--green);
+            border-radius: 8px; padding: 14px 18px;
+            display: flex; align-items: center; gap: 12px;
+            font-family: var(--sans); color: var(--text); font-size: 0.88em;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+            animation: bannerIn 0.3s ease-out;
+        `;
+        banner.innerHTML = `
+            <span style="font-size:1.2em">✅</span>
+            <span>Ranking session saved to history</span>
+            <a href="/history" style="color:var(--purple);text-decoration:none;font-weight:600;white-space:nowrap;">View History →</a>
+            <button onclick="this.parentElement.remove()"
+                    style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:1.1em;padding:0 0 0 4px;">✕</button>
+        `;
+        document.body.appendChild(banner);
+        setTimeout(() => banner && banner.remove(), 8000);
     }
 
     // ── Utility ───────────────────────────────────────────────
