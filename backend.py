@@ -28,8 +28,10 @@ try:
         _db = _mongo_client['har_analyzer']
 
         # Collections
-        _col_single = _db['single_analyses']
-        _col_bulk   = _db['bulk_rankings']
+        _col_single    = _db['single_analyses']
+        _col_bulk      = _db['bulk_rankings']
+        _col_settings  = _db['admin_settings']   # single upserted doc
+        _col_token_use = _db['token_usage']       # single upserted doc
 
         # TTL index: auto-expire documents after 90 days
         _col_single.create_index('created_at', expireAfterSeconds=7776000)
@@ -47,6 +49,24 @@ try:
 except Exception as _mongo_err:
     MONGO_ENABLED = False
     print(f'⚠️  MongoDB connection failed — history disabled: {_mongo_err}')
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Anthropic / Claude API ────────────────────────────────────────────────────
+try:
+    import anthropic as _anthropic
+    ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+    if ANTHROPIC_API_KEY:
+        _anthropic_client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        CLAUDE_ENABLED = True
+        print('✅ Claude API client initialised')
+    else:
+        _anthropic_client = None
+        CLAUDE_ENABLED = False
+        print('⚠️  ANTHROPIC_API_KEY not set — Claude features disabled')
+except ImportError:
+    _anthropic_client = None
+    CLAUDE_ENABLED = False
+    print('⚠️  anthropic package not installed — Claude features disabled')
 # ─────────────────────────────────────────────────────────────────────────────
 
 app = Flask(__name__, static_folder='static')
@@ -1354,6 +1374,594 @@ def history():
     """Serve the analysis history page"""
     return send_from_directory('static', 'history.html')
 
+@app.route('/admin')
+def admin():
+    """Serve the admin panel page"""
+    return send_from_directory('static', 'admin.html')
+
+# ── Admin settings helpers ────────────────────────────────────────────────────
+
+DEFAULT_SYSTEM_PROMPT = """You are a privacy law analyst operating in forensic reconstruction mode.
+
+You will receive structured HAR analysis data extracted from a real browser session. Your task is to produce a litigation-ready package following the exact format and section structure provided.
+
+CORE RULES:
+- Use only the provided HAR analysis data as your source of truth
+- Do not invent, infer, or carry over data from prior sessions
+- Every factual claim must cite a specific HAR index, field name, or value from the data
+- Do not assume consent unless the data explicitly shows a consent mechanism
+- Operate at expert witness level — courtroom-ready language throughout
+
+OUTPUT FORMAT:
+Produce all 7 sections in order:
+1. Declaration-Ready Timeline (pre/post consent boundary, tabular format)
+2. Detailed Expert Declaration (numbered paragraphs, formal language)
+3. CIPA Elements Table (§§ 631 and 632, tabular)
+4. Vendor-by-Vendor Data Classification Matrix (tabular)
+5. Identifier Propagation Map (tabular)
+6. Partial-to-Full Value Reconstruction (tabular)
+7. Damages Analysis (conservative / hybrid / aggressive, tabular with HAR IDs)
+
+Format output as clean Markdown with proper table syntax."""
+
+DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
+
+# Available models — updated via /api/admin/models/refresh
+DEFAULT_MODEL_LIST = [
+    {
+        'id':          'claude-haiku-4-5-20251001',
+        'name':        'Claude Haiku 4.5',
+        'description': 'Fastest · Best for testing and drafts',
+        'input_cost':  1.00,
+        'output_cost': 5.00,
+    },
+    {
+        'id':          'claude-sonnet-4-6',
+        'name':        'Claude Sonnet 4.6',
+        'description': 'Balanced · Recommended for production',
+        'input_cost':  3.00,
+        'output_cost': 15.00,
+    },
+    {
+        'id':          'claude-opus-4-6',
+        'name':        'Claude Opus 4.6',
+        'description': 'Most capable · Court-ready final packages',
+        'input_cost':  5.00,
+        'output_cost': 25.00,
+    },
+]
+
+
+def get_admin_settings():
+    """
+    Return current admin settings from MongoDB.
+    Falls back to defaults if DB unavailable or doc not found.
+    """
+    defaults = {
+        'system_prompt':      DEFAULT_SYSTEM_PROMPT,
+        'prompt_version':     'v1.0',
+        'blank_template':     '',
+        'sample_reference':   '',
+        'default_model':      DEFAULT_MODEL,
+        'model_list':         DEFAULT_MODEL_LIST,
+        'models_refreshed_at': None,
+    }
+    if not MONGO_ENABLED:
+        return defaults
+    try:
+        doc = _col_settings.find_one({'_id': 'global'})
+        if not doc:
+            return defaults
+        doc.pop('_id', None)
+        # Fill any missing keys with defaults
+        for k, v in defaults.items():
+            if k not in doc:
+                doc[k] = v
+        return doc
+    except Exception as e:
+        print(f'⚠️  get_admin_settings failed: {e}')
+        return defaults
+
+
+# ── Admin API routes ──────────────────────────────────────────────────────────
+
+@app.route('/api/admin/settings', methods=['GET'])
+def api_admin_settings_get():
+    """Return current admin settings (prompt, template, default model, model list)."""
+    settings = get_admin_settings()
+    # Convert datetime to string if present
+    if settings.get('models_refreshed_at') and not isinstance(settings['models_refreshed_at'], str):
+        settings['models_refreshed_at'] = settings['models_refreshed_at'].isoformat()
+    return jsonify(settings)
+
+
+@app.route('/api/admin/settings', methods=['POST'])
+def api_admin_settings_post():
+    """
+    Save admin settings to MongoDB.
+    Accepts partial updates — only fields present in the request body are updated.
+    """
+    if not MONGO_ENABLED:
+        return jsonify({'error': 'Database not available', 'saved': False}), 503
+
+    data = request.get_json(silent=True) or {}
+    allowed = {'system_prompt', 'blank_template', 'sample_reference', 'default_model'}
+    update  = {k: v for k, v in data.items() if k in allowed}
+
+    if not update:
+        return jsonify({'error': 'No valid fields provided', 'saved': False}), 400
+
+    # Auto-increment prompt version when system_prompt changes
+    if 'system_prompt' in update:
+        try:
+            current = _col_settings.find_one({'_id': 'global'}) or {}
+            ver_str = current.get('prompt_version', 'v1.0')
+            major, minor = ver_str.lstrip('v').split('.')
+            update['prompt_version'] = f"v{major}.{int(minor) + 1}"
+        except Exception:
+            update['prompt_version'] = 'v1.1'
+
+    update['last_updated'] = datetime.now(timezone.utc)
+
+    try:
+        _col_settings.update_one(
+            {'_id': 'global'},
+            {'$set': update},
+            upsert=True
+        )
+        return jsonify({'saved': True, 'updated_fields': list(update.keys())})
+    except Exception as e:
+        print(f'⚠️  admin settings save failed: {e}')
+        return jsonify({'error': str(e), 'saved': False}), 500
+
+
+@app.route('/api/admin/settings/upload', methods=['POST'])
+def api_admin_settings_upload():
+    """
+    Accept a file upload for blank_template or sample_reference.
+    Supported formats: .txt, .md, .pdf (text extracted via pypdf).
+    Content is saved as text to the admin_settings MongoDB document.
+    """
+    if not MONGO_ENABLED:
+        return jsonify({'error': 'Database not available', 'saved': False}), 503
+
+    field = request.form.get('field')  # 'blank_template' or 'sample_reference'
+    if field not in ('blank_template', 'sample_reference'):
+        return jsonify({'error': 'Invalid field name', 'saved': False}), 400
+
+    file = request.files.get('file')
+    if not file or file.filename == '':
+        return jsonify({'error': 'No file provided', 'saved': False}), 400
+
+    fname = file.filename.lower()
+    allowed = ('.txt', '.md', '.pdf')
+    if not any(fname.endswith(ext) for ext in allowed):
+        return jsonify({
+            'error': f'Only {", ".join(allowed)} files are supported',
+            'saved': False
+        }), 400
+
+    try:
+        raw_bytes = file.read()
+        if fname.endswith('.pdf'):
+            # Extract text from PDF using pypdf (already installed)
+            import io
+            try:
+                import pypdf
+                reader = pypdf.PdfReader(io.BytesIO(raw_bytes))
+                pages  = [page.extract_text() or '' for page in reader.pages]
+                text   = '\n\n'.join(pages).strip()
+                if not text:
+                    return jsonify({
+                        'error': 'PDF appears to be scanned or image-only — no extractable text found. Please use a text-based PDF.',
+                        'saved': False
+                    }), 400
+            except Exception as pdf_err:
+                return jsonify({'error': f'Could not read PDF: {pdf_err}', 'saved': False}), 400
+        else:
+            text = raw_bytes.decode('utf-8', errors='replace')
+    except Exception as e:
+        return jsonify({'error': f'Could not read file: {e}', 'saved': False}), 400
+
+    try:
+        _col_settings.update_one(
+            {'_id': 'global'},
+            {'$set': {
+                field:          text,
+                'last_updated': datetime.now(timezone.utc),
+            }},
+            upsert=True
+        )
+        return jsonify({
+            'saved':    True,
+            'field':    field,
+            'filename': file.filename,
+            'length':   len(text),
+        })
+    except Exception as e:
+        print(f'⚠️  file upload save failed: {e}')
+        return jsonify({'error': str(e), 'saved': False}), 500
+
+
+@app.route('/api/admin/models/refresh', methods=['POST'])
+def api_admin_models_refresh():
+    """
+    Refresh the stored model list.
+    Phase 2b: returns the hardcoded default list (no live Anthropic API call).
+    Phase 3 update: replace with a live call to the Anthropic models endpoint.
+    """
+    if not MONGO_ENABLED:
+        return jsonify({'error': 'Database not available', 'refreshed': False}), 503
+
+    try:
+        now = datetime.now(timezone.utc)
+        _col_settings.update_one(
+            {'_id': 'global'},
+            {'$set': {
+                'model_list':          DEFAULT_MODEL_LIST,
+                'models_refreshed_at': now,
+                'last_updated':        now,
+            }},
+            upsert=True
+        )
+        return jsonify({
+            'refreshed':    True,
+            'model_count':  len(DEFAULT_MODEL_LIST),
+            'refreshed_at': now.isoformat(),
+            'models':       DEFAULT_MODEL_LIST,
+        })
+    except Exception as e:
+        print(f'⚠️  model refresh failed: {e}')
+        return jsonify({'error': str(e), 'refreshed': False}), 500
+
+
+@app.route('/api/admin/test-generate', methods=['POST'])
+def api_admin_test_generate():
+    """
+    Test generation endpoint — Phase 2b stub.
+    Returns a structured HTML report using synthetic data and the saved prompt.
+    No Claude API call is made. This validates the full pipeline flow
+    (settings load → prompt format → HTML render → download) without spending tokens.
+    Phase 3 will replace the stub response with a real Claude API call.
+    """
+    data     = request.get_json(silent=True) or {}
+    model    = data.get('model', DEFAULT_MODEL)
+    settings = get_admin_settings()
+
+    # Synthetic test extract — mirrors what build_litigation_extract() will produce
+    test_extract = {
+        'domain':             'www.example-insurance.com',
+        'session_date':       '2026-04-09',
+        'consent_detected':   False,
+        'vendor_timeline': [
+            {
+                'index': 38, 'timestamp': '2026-04-09T21:05:22.076Z',
+                'vendor': 'LeadID/Jornaya', 'method': 'GET',
+                'url': 'https://i.leadid.com/init',
+                'type': 'session_init',
+                'identifiers': {'pid': 'abc123', 'token': 'tok_xyz', 'lck': 'lck_def'},
+                'pii': [], 'pre_consent': True,
+                'legal_note': 'Session initialization before any consent boundary',
+            },
+            {
+                'index': 64, 'timestamp': '2026-04-09T21:05:33.453Z',
+                'vendor': 'LeadID/Jornaya', 'method': 'POST',
+                'url': 'https://track.leadid.com/track',
+                'type': 'plaintext_pii',
+                'identifiers': {},
+                'pii': [{'field': 'zipcode', 'value': '95050', 'type': 'Zip Code'}],
+                'pre_consent': True,
+                'legal_note': 'Plaintext PII captured before form submission §631(a)',
+            },
+            {
+                'index': 124, 'timestamp': '2026-04-09T21:06:08.818Z',
+                'vendor': 'LeadID/Jornaya', 'method': 'POST',
+                'url': 'https://track.leadid.com/track',
+                'type': 'plaintext_pii',
+                'identifiers': {},
+                'pii': [{'field': 'contactName', 'value': 'Matthew Vargas', 'type': 'Full Name'}],
+                'pre_consent': False,
+                'legal_note': 'Plaintext full name captured post-transition §632',
+            },
+            {
+                'index': 131, 'timestamp': '2026-04-09T21:06:25.881Z',
+                'vendor': 'LeadID/Jornaya', 'method': 'POST',
+                'url': 'https://track.leadid.com/track',
+                'type': 'plaintext_pii',
+                'identifiers': {},
+                'pii': [{'field': 'email', 'value': 'matthew@example.com', 'type': 'Email'}],
+                'pre_consent': False,
+                'legal_note': 'Plaintext email captured post-transition §632',
+            },
+            {
+                'index': 132, 'timestamp': '2026-04-09T21:06:50.018Z',
+                'vendor': 'LeadID/Jornaya', 'method': 'POST',
+                'url': 'https://track.leadid.com/track',
+                'type': 'plaintext_pii',
+                'identifiers': {},
+                'pii': [{'field': 'contactPhone', 'value': '6123277188', 'type': 'Phone'}],
+                'pre_consent': False,
+                'legal_note': 'Plaintext phone captured post-transition §632',
+            },
+            {
+                'index': 287, 'timestamp': '2026-04-09T21:35:04.391Z',
+                'vendor': 'TikTok Pixel', 'method': 'POST',
+                'url': 'https://analytics.tiktok.com/api/v2/pixel/track/',
+                'type': 'hashed_pii',
+                'identifiers': {},
+                'pii': [{'field': 'context.user.eb_phone_number',
+                          'value': 'db8d59b22475fb52ce94321a25470711ca7920b6d1e86e65b5f052b0eb04ed52',
+                          'type': 'Hashed Phone (SHA-256)'}],
+                'pre_consent': False,
+                'legal_note': 'SHA-256 hashed phone enables cross-site user identification',
+            },
+        ],
+        'damages_conservative': {'count': 7,  'value': 35000},
+        'damages_hybrid':       {'count': 29, 'value': 145000},
+        'damages_aggressive':   {'count': 79, 'value': 395000},
+    }
+
+    # Build stub markdown response — same structure Claude will return in Phase 3
+    stub_md = build_stub_report(test_extract, model, settings.get('prompt_version', 'v1.0'))
+
+    # Convert to HTML
+    html_content = markdown_to_html(stub_md)
+
+    return jsonify({
+        'status':         'complete',
+        'stub':           True,
+        'model':          model,
+        'prompt_version': settings.get('prompt_version', 'v1.0'),
+        'html':           html_content,
+        'input_tokens':   0,
+        'output_tokens':  0,
+    })
+
+
+def build_stub_report(extract, model, prompt_version):
+    """
+    Build a stub litigation package in Markdown from the test extract.
+    This is the same structure Claude will produce in Phase 3.
+    """
+    domain   = extract['domain']
+    date_str = extract['session_date']
+    timeline = extract['vendor_timeline']
+    consent  = 'YES' if extract['consent_detected'] else 'NO'
+
+    # Split timeline pre/post consent
+    pre  = [e for e in timeline if e['pre_consent']]
+    post = [e for e in timeline if not e['pre_consent']]
+
+    def timeline_rows(events):
+        rows = []
+        for e in events:
+            pii_str = ', '.join(f"{p['field']}={p['value']}" for p in e['pii']) if e['pii'] else '—'
+            id_str  = ', '.join(f"{k}={v}" for k, v in e.get('identifiers', {}).items()) or '—'
+            data    = pii_str if pii_str != '—' else id_str
+            rows.append(f"| {e['timestamp']} | #{e['index']} | {e['vendor']} | "
+                        f"{'PLAINTEXT PII' if e['type']=='plaintext_pii' else 'Hashed PII' if e['type']=='hashed_pii' else 'Session/Identifiers'} | "
+                        f"{data} | {e['legal_note']} |")
+        return '\n'.join(rows) if rows else '| — | — | — | — | — | — |'
+
+    # Vendor matrix
+    vendors = {}
+    for e in timeline:
+        v = e['vendor']
+        if v not in vendors:
+            vendors[v] = {'timing': [], 'types': set(), 'data': [], 'ids': []}
+        vendors[v]['timing'].append(f"#{e['index']}")
+        vendors[v]['types'].add(e['type'])
+        for p in e.get('pii', []):
+            vendors[v]['data'].append(f"{p['field']}={p['value']}")
+        vendors[v]['ids'].append(str(e['index']))
+
+    vendor_rows = []
+    for vname, vdata in vendors.items():
+        timing   = ', '.join(vdata['timing'])
+        types    = ', '.join(vdata['types'])
+        data_str = '; '.join(vdata['data']) if vdata['data'] else 'Identifiers only'
+        ids_str  = ', '.join(vdata['ids'])
+        vendor_rows.append(f"| {vname} | {timing} | {types} | {data_str} | {ids_str} |")
+
+    dmg = extract
+    con = dmg['damages_conservative']
+    hyb = dmg['damages_hybrid']
+    agg = dmg['damages_aggressive']
+
+    return f"""# Final Litigation Package — {domain}
+## ⚠️ STUB OUTPUT — Phase 2b test (no Claude API call made)
+**Domain:** {domain}  |  **Session Date:** {date_str}  |  **Consent Detected:** {consent}
+**Model:** {model}  |  **Prompt Version:** {prompt_version}
+
+---
+
+## 1. Declaration-Ready Timeline
+
+### A. Pre-Consent Events
+
+| Time (UTC) | HAR ID | Vendor | Data Type | Transmitted | Legal Significance |
+|---|---|---|---|---|---|
+{timeline_rows(pre)}
+
+### B. Post-Consent Events
+
+| Time (UTC) | HAR ID | Vendor | Data Type | Transmitted | Legal Significance |
+|---|---|---|---|---|---|
+{timeline_rows(post)}
+
+---
+
+## 2. Expert Declaration
+
+I, [Name], declare as follows:
+
+1. I reviewed structured HAR analysis data for {domain} captured on {date_str}.
+2. I did not identify a consent management platform or affirmative consent event in the session data.
+3. LeadID/Jornaya received plaintext user input — including zip code, full name, email address, and phone number — both before and after the first meaningful form step transition.
+4. TikTok Pixel received a SHA-256 hashed phone number at HAR #287 enabling cross-site user identification.
+5. No verified consent mechanism was observed preceding any of the third-party data transmissions described above.
+
+I declare under penalty of perjury under the laws of the State of California that the foregoing is true and correct.
+
+---
+
+## 3. CIPA Elements (§§ 631 and 632)
+
+| Element | Requirement | Best Evidence | Why It Proves the Element |
+|---|---|---|---|
+| Interception during transmission §631(a) | Third party reads communication in transit | HAR #64: zipcode=95050 captured pre-submission | LeadID received plaintext data before the user submitted the form |
+| Contents of a communication §631(a) | Substance, not just routing information | HAR #124, #131, #132: name, email, phone | Actual typed field values — not anonymous identifiers |
+| Third-party disclosure §632 | Disclosed to third party without authorization | All LeadID SaveFormField requests post-transition | No consent mechanism observed; data disclosed outward |
+| No valid consent §§631–632 | Interception occurs before or without consent | No CMP or acceptance event in session data | Session data lacks any conventional consent flow |
+
+---
+
+## 4. Vendor-by-Vendor Data Classification Matrix
+
+| Vendor | HAR IDs | Data Type | Exactly What Received | Supporting IDs |
+|---|---|---|---|---|
+{chr(10).join(vendor_rows)}
+
+---
+
+## 5. Identifier Propagation Map
+
+| Recurring Identifier | Where It Appears | Vendors | Why It Matters |
+|---|---|---|---|
+| pid=abc123 | HAR #38 init + all SaveFormField requests | LeadID/Jornaya | Ties full session together from initialization through field captures |
+| SHA-256 phone hash | HAR #287 TikTok payload | TikTok Pixel | Enables cross-site tracking and persistent user re-identification |
+
+---
+
+## 6. Partial-to-Full Value Reconstruction
+
+| Field | Partial Values Observed | Full Final Value | HAR IDs | Significance |
+|---|---|---|---|---|
+| Zip Code | No partial sequence | 95050 | #64 | Plaintext final value captured by LeadID pre-submission |
+| Full Name | No partial sequence | Matthew Vargas | #124 | Plaintext full name captured by LeadID |
+| Email | No partial sequence | matthew@example.com | #131 | Plaintext email captured by LeadID |
+| Phone | No partial sequence | 6123277188 | #132 | Plaintext phone captured by LeadID |
+| Hashed Phone | N/A — hash only | db8d59b2... (SHA-256) | #287 | Hashed value received by TikTok enabling re-identification |
+
+---
+
+## 7. Damages Analysis
+
+| Approach | Counting Logic | HAR IDs Included | Count | Statutory Value |
+|---|---|---|---|---|
+| Conservative | Strongest plaintext PII captures only | #64, #124, #131, #132 | {con['count']} | ${con['value']:,} |
+| Hybrid | Conservative + corroborating identifier transmissions | #38, #64, #124, #131, #132, #287 | {hyb['count']} | ${hyb['value']:,} |
+| Aggressive | All relevant third-party transmissions | All vendor requests | {agg['count']} | ${agg['value']:,} |
+
+**Recommended approach:** Conservative is the cleanest and most defensible. Hybrid adds surrounding context without over-counting repetitive calls.
+"""
+
+
+def markdown_to_html(md):
+    """
+    Convert Markdown litigation package to styled HTML.
+    Handles: headings, tables (with thead/tbody), bold/italic,
+    numbered lists, horizontal rules, and warning blocks.
+    Used for both stub and real Claude output.
+    """
+    lines  = md.split('\n')
+    output = []
+    i      = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Markdown table — collect all consecutive pipe lines
+        if line.startswith('|'):
+            table_lines = []
+            while i < len(lines) and lines[i].startswith('|'):
+                table_lines.append(lines[i])
+                i += 1
+
+            tbl  = '<table>\n'
+            first = True
+            for tl in table_lines:
+                cells = [c.strip() for c in tl.split('|')[1:-1]]
+                # Skip separator rows
+                if all(re.match(r'^-+$', c.replace(':', '').strip()) for c in cells if c):
+                    continue
+                if first:
+                    tbl  += '<thead><tr>' + ''.join(f'<th>{c}</th>' for c in cells) + '</tr></thead>\n<tbody>\n'
+                    first = False
+                else:
+                    tbl  += '<tr>' + ''.join(f'<td>{inline(c)}</td>' for c in cells) + '</tr>\n'
+            tbl += '</tbody></table>\n'
+            output.append(tbl)
+            continue
+
+        # Warning block
+        if line.startswith('## ⚠️'):
+            output.append(f'<div class=\"warning\"><strong>⚠️</strong> {inline(line[6:])}</div>')
+            i += 1; continue
+
+        # Headings
+        if line.startswith('### '): output.append(f'<h3>{inline(line[4:])}</h3>'); i += 1; continue
+        if line.startswith('## '):  output.append(f'<h2>{inline(line[3:])}</h2>'); i += 1; continue
+        if line.startswith('# '):   output.append(f'<h1>{inline(line[2:])}</h1>'); i += 1; continue
+
+        # Horizontal rule
+        if line.strip() == '---': output.append('<hr>'); i += 1; continue
+
+        # Numbered list
+        if re.match(r'^\d+\.\s', line):
+            output.append(f'<li>{inline(line[line.index(".")+2:])}</li>')
+            i += 1; continue
+
+        # Blank line
+        if line.strip() == '': i += 1; continue
+
+        # Paragraph
+        output.append(f'<p>{inline(line)}</p>')
+        i += 1
+
+    body = '\n'.join(output)
+
+    # Wrap consecutive <li> in <ol>
+    body = re.sub(r'((?:<li>.*?</li>\n?)+)', lambda m: '<ol>\n' + m.group(0) + '</ol>\n', body)
+
+    return f"""<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+<meta charset=\"UTF-8\">
+<title>Litigation Package</title>
+<style>
+  body {{ font-family: Arial, sans-serif; max-width: 980px; margin: 40px auto; padding: 0 32px; color: #222; line-height: 1.7; }}
+  h1 {{ font-size: 1.4em; border-bottom: 2px solid #333; padding-bottom: 8px; margin-top: 32px; }}
+  h2 {{ font-size: 1.15em; margin-top: 32px; color: #333; border-left: 3px solid #666; padding-left: 10px; }}
+  h3 {{ font-size: 1em; margin-top: 20px; color: #444; }}
+  table {{ border-collapse: collapse; width: 100%; margin: 16px 0 24px; font-size: 0.87em; }}
+  thead th {{ background: #e8e8e8; padding: 9px 12px; border: 1px solid #bbb; text-align: left; font-weight: 600; }}
+  tbody td {{ padding: 8px 12px; border: 1px solid #ddd; vertical-align: top; }}
+  tbody tr:nth-child(even) {{ background: #f9f9f9; }}
+  hr {{ border: none; border-top: 1px solid #e0e0e0; margin: 28px 0; }}
+  p {{ margin: 8px 0; }}
+  ol {{ margin: 8px 0 8px 24px; padding: 0; }}
+  li {{ margin: 4px 0; }}
+  code {{ background: #f4f4f4; padding: 1px 5px; border-radius: 3px; font-size: 0.9em; }}
+  strong {{ color: #111; }}
+  .warning {{ background: #fff8e1; border: 1px solid #f0c040; border-left: 4px solid #e6ac00;
+              padding: 10px 16px; border-radius: 4px; font-size: 0.88em; margin: 12px 0; }}
+</style>
+</head>
+<body>
+{body}
+</body>
+</html>"""
+
+
+def inline(text):
+    """Apply inline markdown formatting (bold, italic, code)."""
+    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+    text = re.sub(r'\*(.+?)\*',     r'<em>\1</em>',         text)
+    text = re.sub(r'`(.+?)`',        r'<code>\1</code>',     text)
+    return text
+
+
 # ── History API endpoints ────────────────────────────────────────────────────
 
 @app.route('/api/history/single', methods=['GET'])
@@ -2022,6 +2630,104 @@ def analyze_bulk():
             'X-Accel-Buffering': 'no',
         }
     )
+
+# ── Claude / Anthropic helpers ───────────────────────────────────────────────
+
+def track_token_usage(input_tokens, output_tokens):
+    """
+    Accumulate token usage in MongoDB. Non-fatal if DB unavailable.
+    """
+    if not MONGO_ENABLED:
+        return
+    try:
+        _col_token_use.update_one(
+            {'_id': 'global'},
+            {
+                '$inc': {
+                    'total_input_tokens':  input_tokens,
+                    'total_output_tokens': output_tokens,
+                    'total_calls':         1,
+                },
+                '$set': {'last_updated': datetime.now(timezone.utc)},
+            },
+            upsert=True
+        )
+    except Exception as e:
+        print(f'⚠️  Token tracking failed: {e}')
+
+
+def get_token_usage():
+    """Return cumulative token usage from MongoDB, or zeros if unavailable."""
+    if not MONGO_ENABLED:
+        return {'total_input_tokens': 0, 'total_output_tokens': 0, 'total_calls': 0}
+    try:
+        doc = _col_token_use.find_one({'_id': 'global'}) or {}
+        return {
+            'total_input_tokens':  doc.get('total_input_tokens',  0),
+            'total_output_tokens': doc.get('total_output_tokens', 0),
+            'total_calls':         doc.get('total_calls',         0),
+        }
+    except Exception:
+        return {'total_input_tokens': 0, 'total_output_tokens': 0, 'total_calls': 0}
+
+
+@app.route('/api/claude/status', methods=['GET'])
+def api_claude_status():
+    """
+    Return Claude API status and token usage.
+
+    ?test=1  — actually sends a live ping to the API (costs tokens).
+               Only called when the user clicks 'Test Connection'.
+    No param  — returns configuration status and token counts only,
+               no API call made. Safe to call freely.
+    """
+    api_key_set = bool(os.environ.get('ANTHROPIC_API_KEY', ''))
+    run_test    = request.args.get('test') == '1'
+
+    if not CLAUDE_ENABLED or not run_test:
+        return jsonify({
+            'connected':   CLAUDE_ENABLED,
+            'api_key_set': api_key_set,
+            'live_test':   False,
+            'error':       None if CLAUDE_ENABLED else (
+                           'ANTHROPIC_API_KEY not set' if not api_key_set
+                           else 'anthropic package not installed'),
+            'usage':       get_token_usage(),
+        })
+
+    # ?test=1 — send a live ping (user explicitly requested)
+    try:
+        response = _anthropic_client.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=5,
+            messages=[{'role': 'user', 'content': 'Reply with one word: OK'}]
+        )
+        reply         = response.content[0].text.strip() if response.content else ''
+        input_tokens  = response.usage.input_tokens
+        output_tokens = response.usage.output_tokens
+
+        track_token_usage(input_tokens, output_tokens)
+
+        return jsonify({
+            'connected':    True,
+            'api_key_set':  True,
+            'live_test':    True,
+            'model_tested': 'claude-haiku-4-5-20251001',
+            'reply':        reply,
+            'test_tokens':  {'input': input_tokens, 'output': output_tokens},
+            'error':        None,
+            'usage':        get_token_usage(),
+        })
+
+    except Exception as e:
+        return jsonify({
+            'connected':   False,
+            'api_key_set': api_key_set,
+            'live_test':   True,
+            'error':       str(e),
+            'usage':       get_token_usage(),
+        })
+
 
 if __name__ == '__main__':
     # This file should be run via app.py

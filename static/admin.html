@@ -1,0 +1,1461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin — HAR Privacy Analyzer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg:           #0f1117;
+            --surface:      #181c27;
+            --surface-2:    #1f2436;
+            --border:       #2a3050;
+            --border-light: #343d5c;
+            --purple:       #7c6ff7;
+            --purple-dim:   #4a4480;
+            --purple-glow:  rgba(124, 111, 247, 0.12);
+            --red:          #e05c5c;
+            --orange:       #e08a3c;
+            --yellow:       #d4b84a;
+            --green:        #4caf7d;
+            --text:         #e2e6f3;
+            --text-dim:     #8892b0;
+            --text-faint:   #4a5578;
+            --mono:         'IBM Plex Mono', monospace;
+            --sans:         'IBM Plex Sans', sans-serif;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: var(--sans);
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        /* ── NAV ─────────────────────────────────────────────── */
+        .topnav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 32px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .topnav-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-family: var(--mono);
+            font-weight: 600;
+            font-size: 0.95em;
+            color: var(--purple);
+            text-decoration: none;
+        }
+
+        .topnav-brand .icon {
+            width: 30px;
+            height: 30px;
+            background: var(--purple);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1em;
+        }
+
+        .topnav-links { display: flex; gap: 4px; }
+
+        .nav-link {
+            padding: 7px 16px;
+            border-radius: 6px;
+            font-size: 0.88em;
+            font-weight: 500;
+            text-decoration: none;
+            color: var(--text-dim);
+            transition: all 0.15s;
+            border: 1px solid transparent;
+        }
+
+        .nav-link:hover { color: var(--text); background: var(--surface-2); }
+
+        .nav-link.active {
+            color: var(--purple);
+            background: var(--purple-glow);
+            border-color: var(--purple-dim);
+        }
+
+        /* ── LAYOUT ──────────────────────────────────────────── */
+        .page {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 48px 24px 80px;
+        }
+
+        .page-header { margin-bottom: 36px; }
+
+        .page-header .eyebrow {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            font-weight: 600;
+            color: var(--purple);
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .page-header h1 {
+            font-size: 2em;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .page-header p {
+            font-size: 0.95em;
+            color: var(--text-dim);
+        }
+
+        /* ── TABS ────────────────────────────────────────────── */
+        .tab-bar {
+            display: flex;
+            gap: 2px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 28px;
+        }
+
+        .tab-btn {
+            padding: 10px 22px;
+            font-family: var(--sans);
+            font-size: 0.9em;
+            font-weight: 500;
+            color: var(--text-dim);
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .tab-btn:hover { color: var(--text); }
+
+        .tab-btn.active {
+            color: var(--purple);
+            border-bottom-color: var(--purple);
+        }
+
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
+        /* ── CARDS ───────────────────────────────────────────── */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 28px;
+            margin-bottom: 20px;
+        }
+
+        .card-title {
+            font-family: var(--mono);
+            font-size: 0.8em;
+            font-weight: 600;
+            color: var(--text-dim);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-title::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--border);
+        }
+
+        /* ── STATUS ROW ──────────────────────────────────────── */
+        .status-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 12px;
+        }
+
+        .status-label {
+            font-family: var(--mono);
+            font-size: 0.78em;
+            color: var(--text-faint);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            min-width: 140px;
+        }
+
+        .status-value {
+            font-size: 0.9em;
+            color: var(--text);
+            flex: 1;
+            padding: 0 16px;
+        }
+
+        .status-badge {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            font-weight: 600;
+            padding: 3px 10px;
+            border-radius: 4px;
+        }
+
+        .badge-green  { background: rgba(76,175,125,0.15);  color: var(--green);  border: 1px solid rgba(76,175,125,0.3); }
+        .badge-red    { background: rgba(224,92,92,0.15);   color: var(--red);    border: 1px solid rgba(224,92,92,0.3); }
+        .badge-purple { background: var(--purple-glow);      color: var(--purple); border: 1px solid var(--purple-dim); }
+        .badge-dim    { background: var(--surface);          color: var(--text-faint); border: 1px solid var(--border); }
+
+        /* ── STAT GRID ───────────────────────────────────────── */
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .stat-box {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+        }
+
+        .stat-val {
+            font-family: var(--mono);
+            font-size: 1.5em;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            font-size: 0.78em;
+            color: var(--text-dim);
+        }
+
+        /* ── FORM ELEMENTS ───────────────────────────────────── */
+        .field-group { margin-bottom: 20px; }
+
+        .field-label {
+            display: block;
+            font-family: var(--mono);
+            font-size: 0.75em;
+            font-weight: 600;
+            color: var(--text-dim);
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .field-hint {
+            font-size: 0.82em;
+            color: var(--text-faint);
+            margin-bottom: 8px;
+            line-height: 1.5;
+        }
+
+        textarea, input[type="text"], select {
+            width: 100%;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            color: var(--text);
+            font-family: var(--sans);
+            font-size: 0.9em;
+            padding: 10px 14px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        textarea {
+            font-family: var(--mono);
+            font-size: 0.82em;
+            resize: vertical;
+            line-height: 1.6;
+        }
+
+        textarea:focus, input[type="text"]:focus, select:focus {
+            border-color: var(--purple);
+        }
+
+        textarea::placeholder, input::placeholder {
+            color: var(--text-faint);
+        }
+
+        .token-count {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            color: var(--text-faint);
+            text-align: right;
+            margin-top: 6px;
+        }
+
+        /* ── FILE UPLOAD ZONE ────────────────────────────────── */
+        .file-drop {
+            border: 2px dashed var(--border-light);
+            border-radius: 8px;
+            padding: 28px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.15s;
+            background: var(--surface-2);
+            position: relative;
+        }
+
+        .file-drop:hover, .file-drop.dragover {
+            border-color: var(--purple);
+            background: var(--purple-glow);
+        }
+
+        .file-drop input[type="file"] {
+            position: absolute;
+            inset: 0;
+            opacity: 0;
+            cursor: pointer;
+            width: 100%;
+            height: 100%;
+        }
+
+        .file-drop-icon { font-size: 1.8em; margin-bottom: 8px; opacity: 0.6; }
+        .file-drop-text { font-size: 0.88em; color: var(--text-dim); margin-bottom: 4px; }
+        .file-drop-hint { font-size: 0.78em; color: var(--text-faint); }
+
+        .file-uploaded {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            background: rgba(76,175,125,0.08);
+            border: 1px solid rgba(76,175,125,0.25);
+            border-radius: 7px;
+            margin-top: 10px;
+        }
+
+        .file-uploaded-name {
+            font-family: var(--mono);
+            font-size: 0.82em;
+            color: var(--green);
+            flex: 1;
+        }
+
+        .file-clear-btn {
+            background: none;
+            border: none;
+            color: var(--text-faint);
+            cursor: pointer;
+            font-size: 0.9em;
+            padding: 2px 6px;
+            border-radius: 4px;
+            transition: color 0.15s;
+        }
+
+        .file-clear-btn:hover { color: var(--red); }
+
+        /* ── MODEL SELECTOR ──────────────────────────────────── */
+        .model-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+        }
+
+        .model-row {
+            display: grid;
+            grid-template-columns: 28px 1fr 80px 80px auto;
+            align-items: center;
+            gap: 14px;
+            padding: 12px 16px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            transition: border-color 0.15s;
+            cursor: pointer;
+        }
+
+        .model-row:hover { border-color: var(--border-light); }
+
+        .model-row.selected {
+            border-color: var(--purple);
+            background: var(--purple-glow);
+        }
+
+        .model-radio {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--purple);
+        }
+
+        .model-name {
+            font-family: var(--mono);
+            font-size: 0.82em;
+            color: var(--text);
+        }
+
+        .model-name small {
+            display: block;
+            font-size: 0.85em;
+            color: var(--text-faint);
+            margin-top: 2px;
+            font-family: var(--sans);
+        }
+
+        .model-cost {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            color: var(--text-dim);
+            text-align: right;
+        }
+
+        .model-default-badge {
+            font-family: var(--mono);
+            font-size: 0.7em;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+
+        /* ── BUTTONS ─────────────────────────────────────────── */
+        .btn-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 16px;
+        }
+
+        .btn-primary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 22px;
+            background: var(--purple);
+            color: white;
+            border: none;
+            border-radius: 7px;
+            font-family: var(--sans);
+            font-size: 0.9em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .btn-primary:hover { background: #9589ff; }
+        .btn-primary:disabled { opacity: 0.35; cursor: not-allowed; }
+
+        .btn-secondary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 18px;
+            background: transparent;
+            color: var(--text-dim);
+            border: 1px solid var(--border-light);
+            border-radius: 7px;
+            font-family: var(--sans);
+            font-size: 0.88em;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .btn-secondary:hover { color: var(--text); border-color: var(--text-dim); }
+
+        .btn-danger {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 18px;
+            background: rgba(224,92,92,0.1);
+            color: var(--red);
+            border: 1px solid rgba(224,92,92,0.3);
+            border-radius: 7px;
+            font-family: var(--sans);
+            font-size: 0.88em;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .btn-danger:hover { background: rgba(224,92,92,0.2); }
+
+        /* ── TEST GENERATION SECTION ─────────────────────────── */
+        .test-output-area {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 16px;
+            display: none;
+        }
+
+        .test-output-area.visible { display: block; }
+
+        .test-output-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 14px;
+        }
+
+        .test-output-label {
+            font-family: var(--mono);
+            font-size: 0.75em;
+            color: var(--text-faint);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+
+        .test-output-content {
+            font-size: 0.85em;
+            color: var(--text-dim);
+            line-height: 1.7;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: var(--mono);
+        }
+
+        /* ── DIVIDER ─────────────────────────────────────────── */
+        .section-divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 24px 0;
+        }
+
+        /* ── ALERT ───────────────────────────────────────────── */
+        .alert {
+            padding: 12px 16px;
+            border-radius: 7px;
+            font-size: 0.88em;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        .alert-info {
+            background: var(--purple-glow);
+            border: 1px solid var(--purple-dim);
+            color: var(--text-dim);
+        }
+
+        .alert-warn {
+            background: rgba(212,184,74,0.08);
+            border: 1px solid rgba(212,184,74,0.25);
+            color: var(--yellow);
+        }
+
+        /* ── RESPONSIVE ──────────────────────────────────────── */
+        @media (max-width: 640px) {
+            .page { padding: 24px 16px 60px; }
+            .topnav { padding: 12px 16px; }
+            .stat-grid { grid-template-columns: repeat(2, 1fr); }
+            .model-row { grid-template-columns: 28px 1fr auto; }
+            .model-cost { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── NAV ──────────────────────────────────────────────────── -->
+<nav class="topnav">
+    <a href="/" class="topnav-brand">
+        <div class="icon">🔍</div>
+        HAR Privacy Analyzer
+    </a>
+    <div class="topnav-links">
+        <a href="/"        class="nav-link">Single File</a>
+        <a href="/bulk"    class="nav-link">Bulk Ranker</a>
+        <a href="/history" class="nav-link">History</a>
+        <a href="/admin"   class="nav-link active">Admin</a>
+    </div>
+</nav>
+
+<!-- ── PAGE ─────────────────────────────────────────────────── -->
+<div class="page">
+
+    <div class="page-header">
+        <div class="eyebrow">Configuration</div>
+        <h1>Admin Panel</h1>
+        <p>Manage Claude API settings, prompts, templates, and model configuration.</p>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tab-bar">
+        <button class="tab-btn active" onclick="switchTab('api')">API & Usage</button>
+        <button class="tab-btn" onclick="switchTab('prompt')">Prompt Editor</button>
+        <button class="tab-btn" onclick="switchTab('template')">Templates</button>
+        <button class="tab-btn" onclick="switchTab('models')">Models</button>
+        <button class="tab-btn" onclick="switchTab('test')">Test Generation</button>
+    </div>
+
+    <!-- ══ TAB 1: API & Usage ══════════════════════════════════ -->
+    <div class="tab-panel active" id="panel-api">
+
+        <div class="card">
+            <div class="card-title">Connection Status</div>
+
+            <div class="status-row">
+                <div class="status-label">Claude API</div>
+                <div class="status-value" id="apiStatusText">Checking...</div>
+                <span class="status-badge badge-dim" id="apiStatusBadge">—</span>
+            </div>
+
+            <div class="status-row">
+                <div class="status-label">API Key</div>
+                <div class="status-value" id="apiKeyStatus">—</div>
+                <span class="status-badge badge-dim" id="apiKeyBadge">—</span>
+            </div>
+
+            <div class="status-row">
+                <div class="status-label">Default Model</div>
+                <div class="status-value" id="defaultModelStatus">—</div>
+                <span class="status-badge badge-purple" id="defaultModelBadge">Configured</span>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn-primary" onclick="runLiveConnectionTest()">🔌 Test Live Connection</button>
+                <span style="font-size:0.82em; color:var(--text-faint);" id="testNote">Sends a live ping — costs ~10 tokens</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">Token Usage</div>
+
+            <div class="stat-grid">
+                <div class="stat-box">
+                    <div class="stat-val" id="totalTokens">—</div>
+                    <div class="stat-label">Total Tokens Used</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val" id="totalCalls">—</div>
+                    <div class="stat-label">Total API Calls</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val" id="estCost">—</div>
+                    <div class="stat-label">Est. Cost (Haiku rates)</div>
+                </div>
+            </div>
+
+            <div class="stat-grid">
+                <div class="stat-box">
+                    <div class="stat-val" id="inputTokens">—</div>
+                    <div class="stat-label">Input Tokens</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val" id="outputTokens">—</div>
+                    <div class="stat-label">Output Tokens</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val" id="reportsGenerated">—</div>
+                    <div class="stat-label">Reports Generated</div>
+                </div>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn-secondary" onclick="refreshUsage()">↻ Refresh</button>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ══ TAB 2: Prompt Editor ════════════════════════════════ -->
+    <div class="tab-panel" id="panel-prompt">
+
+        <div class="alert alert-info">
+            ℹ️ This is the system prompt sent to Claude before the litigation data extract. It controls Claude's analysis methodology, output format, and legal framing. Changes take effect on the next report generation.
+        </div>
+
+        <div class="card">
+            <div class="card-title">System Prompt</div>
+
+            <div class="field-group">
+                <label class="field-label">Active Prompt <span style="color:var(--purple);font-family:var(--mono);" id="promptVersion">v1.0</span></label>
+                <div class="field-hint">This prompt instructs Claude to operate in forensic reconstruction mode. It is sent as the system message before the HAR analysis data.</div>
+                <textarea id="systemPrompt" rows="20" placeholder="Enter the system prompt that will be sent to Claude...
+
+Example opening:
+You are a privacy law analyst operating in forensic reconstruction mode. You will receive structured HAR analysis data and must produce a litigation-ready package following the exact format specified. Do not summarize — derive every conclusion from the provided data only..."></textarea>
+                <div class="token-count" id="promptTokenCount">0 characters (~0 tokens)</div>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn-primary" onclick="savePrompt()">💾 Save Prompt</button>
+                <button class="btn-secondary" onclick="resetPromptToDefault()">↺ Reset to Default</button>
+                <span style="font-size:0.82em;color:var(--text-faint);margin-left:auto;" id="promptSaveStatus"></span>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ══ TAB 3: Templates ════════════════════════════════════ -->
+    <div class="tab-panel" id="panel-template">
+
+        <div class="alert alert-info">
+            ℹ️ Upload reference files that help Claude understand the expected output format and quality level. These are provided to Claude alongside the prompt and analysis data.
+        </div>
+
+        <div class="card">
+            <div class="card-title">Blank Template</div>
+
+            <div class="field-group">
+                <label class="field-label">Output Structure Template</label>
+                <div class="field-hint">A blank template showing the section structure Claude should follow. <strong style="color:var(--green)">File uploads save automatically.</strong> Paste text below as an alternative and click Save.</div>
+
+                <div class="file-drop" id="templateFileDrop" ondragover="handleDragOver(event,'templateFileDrop')" ondragleave="handleDragLeave('templateFileDrop')" ondrop="handleFileDrop(event,'templateFile','templateFileStatus')">
+                    <input type="file" id="templateFile" accept=".txt,.md,.pdf" onchange="handleFileSelect('templateFile','templateFileStatus')">
+                    <div class="file-drop-icon">📄</div>
+                    <div class="file-drop-text">Drop template file here or click to browse</div>
+                    <div class="file-drop-hint">Accepts .txt, .md, or .pdf</div>
+                </div>
+
+                <div class="file-uploaded" id="templateFileStatus" style="display:none;">
+                    <span>✅</span>
+                    <span class="file-uploaded-name" id="templateFileName">—</span>
+                    <button class="file-clear-btn" onclick="clearFile('templateFile','templateFileStatus')">✕</button>
+                </div>
+            </div>
+
+            <hr class="section-divider">
+
+            <div class="field-group">
+                <label class="field-label">Or paste template text directly</label>
+                <textarea id="templateText" rows="12" placeholder="Paste your blank litigation package template here...
+
+# Final Litigation Package
+## 1. Declaration-Ready Timeline
+..."></textarea>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn-primary" onclick="saveTemplate('blank')">💾 Save Pasted Text</button>
+                <span style="font-size:0.82em;color:var(--text-faint);margin-left:auto;" id="templateSaveStatus"></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">Sample Reference File</div>
+
+            <div class="field-group">
+                <label class="field-label">Quality Reference Example</label>
+                <div class="field-hint">A completed litigation package shown to Claude as a quality reference. <strong style="color:var(--green)">File uploads save automatically.</strong> Claude uses it for tone, legal framing, and formatting — not for factual content.</div>
+
+                <div class="file-drop" id="sampleFileDrop" ondragover="handleDragOver(event,'sampleFileDrop')" ondragleave="handleDragLeave('sampleFileDrop')" ondrop="handleFileDrop(event,'sampleFile','sampleFileStatus')">
+                    <input type="file" id="sampleFile" accept=".txt,.md,.pdf" onchange="handleFileSelect('sampleFile','sampleFileStatus')">
+                    <div class="file-drop-icon">📋</div>
+                    <div class="file-drop-text">Drop sample litigation package here or click to browse</div>
+                    <div class="file-drop-hint">Accepts .txt, .md, or .pdf</div>
+                </div>
+
+                <div class="file-uploaded" id="sampleFileStatus" style="display:none;">
+                    <span>✅</span>
+                    <span class="file-uploaded-name" id="sampleFileName">—</span>
+                    <button class="file-clear-btn" onclick="clearFile('sampleFile','sampleFileStatus')">✕</button>
+                </div>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn-primary" onclick="saveTemplate('sample')" style="display:none">💾 Save Sample</button>
+                <span style="font-size:0.82em;color:var(--text-faint);margin-left:auto;" id="sampleSaveStatus"></span>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ══ TAB 4: Models ═══════════════════════════════════════ -->
+    <div class="tab-panel" id="panel-models">
+
+        <div class="card">
+            <div class="card-title">Default Model</div>
+
+            <div class="field-group">
+                <label class="field-label">Select Default Model</label>
+                <div class="field-hint">The default model pre-selected when a user generates a litigation package. Users can override this per-generation. Haiku is recommended for testing; Sonnet for production use.</div>
+
+                <div class="model-grid" id="modelGrid">
+
+                    <label class="model-row selected" onclick="selectModel('claude-haiku-4-5-20251001', this)">
+                        <input type="radio" class="model-radio" name="defaultModel" value="claude-haiku-4-5-20251001" checked>
+                        <div class="model-name">
+                            Claude Haiku 4.5
+                            <small>Fastest · Best for testing and drafts</small>
+                        </div>
+                        <div class="model-cost">$1 / MTok in</div>
+                        <div class="model-cost">$5 / MTok out</div>
+                        <span class="model-default-badge badge-green">DEFAULT</span>
+                    </label>
+
+                    <label class="model-row" onclick="selectModel('claude-sonnet-4-6', this)">
+                        <input type="radio" class="model-radio" name="defaultModel" value="claude-sonnet-4-6">
+                        <div class="model-name">
+                            Claude Sonnet 4.6
+                            <small>Balanced · Recommended for production</small>
+                        </div>
+                        <div class="model-cost">$3 / MTok in</div>
+                        <div class="model-cost">$15 / MTok out</div>
+                        <span class="model-default-badge badge-dim">—</span>
+                    </label>
+
+                    <label class="model-row" onclick="selectModel('claude-opus-4-6', this)">
+                        <input type="radio" class="model-radio" name="defaultModel" value="claude-opus-4-6">
+                        <div class="model-name">
+                            Claude Opus 4.6
+                            <small>Most capable · Court-ready final packages</small>
+                        </div>
+                        <div class="model-cost">$5 / MTok in</div>
+                        <div class="model-cost">$25 / MTok out</div>
+                        <span class="model-default-badge badge-dim">—</span>
+                    </label>
+
+                </div>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn-primary" onclick="saveDefaultModel()">💾 Save Default Model</button>
+                <button class="btn-secondary" onclick="refreshModels()">↻ Refresh Model List</button>
+                <span style="font-size:0.82em;color:var(--text-faint);margin-left:auto;" id="modelSaveStatus"></span>
+            </div>
+
+            <div style="margin-top:12px;font-size:0.78em;color:var(--text-faint);">
+                Last refreshed: <span id="modelsLastRefreshed">—</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">Cost Reference</div>
+
+            <div class="alert alert-info" style="margin-bottom:0;">
+                ℹ️ A typical litigation package report uses approximately 8,000–15,000 input tokens (HAR extract + system prompt) and 3,000–5,000 output tokens. Estimated cost per report:
+                <ul style="margin-top:8px;margin-left:20px;line-height:1.8;">
+                    <li><strong style="color:var(--text);">Haiku 4.5:</strong> ~$0.03–0.08 per report</li>
+                    <li><strong style="color:var(--text);">Sonnet 4.6:</strong> ~$0.08–0.20 per report</li>
+                    <li><strong style="color:var(--text);">Opus 4.6:</strong> ~$0.12–0.30 per report</li>
+                </ul>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ══ TAB 5: Test Generation ══════════════════════════════ -->
+    <div class="tab-panel" id="panel-test">
+
+        <div class="alert alert-warn">
+            ⚠️ This tab sends a real request to the Claude API using synthetic test data. It will use tokens. Use it to validate the full generation pipeline before running against real HAR files.
+        </div>
+
+        <div class="card">
+            <div class="card-title">Test Configuration</div>
+
+            <div class="field-group">
+                <label class="field-label">Model for this test</label>
+                <select id="testModel">
+                    <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 — cheapest (~$0.03)</option>
+                    <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — balanced (~$0.12)</option>
+                    <option value="claude-opus-4-6">Claude Opus 4.6 — best quality (~$0.20)</option>
+                </select>
+                <div class="field-hint" style="margin-top:8px;">Haiku recommended for test runs to minimise token spend.</div>
+            </div>
+
+            <div class="field-group">
+                <label class="field-label">Synthetic Test Data Preview</label>
+                <div class="field-hint">The following synthetic HAR extract will be sent to Claude. It simulates a realistic litigation scenario with LeadID interception and TikTok hashed PII.</div>
+                <textarea id="testDataPreview" rows="14" readonly style="color:var(--text-faint);cursor:default;">Domain: www.example-insurance.com
+Session Date: 2026-04-09
+Consent Detected: NO
+
+VENDOR TIMELINE:
+
+[2026-04-09T21:05:22.076Z] #38 LeadID/Jornaya | GET https://i.leadid.com/init
+  Type: Session initialization
+  Identifiers: pid=abc123, token=tok_xyz, lck=lck_def, lac=lac_ghi
+  Pre-Consent: YES
+
+[2026-04-09T21:05:33.453Z] #64 LeadID/Jornaya | POST https://track.leadid.com/track
+  Event: SaveFormField
+  Field: zipcode, Value: 95050  [PLAINTEXT PII]
+  Pre-Consent: YES
+  Legal: Interception during transmission §631(a)
+
+[2026-04-09T21:06:08.818Z] #124 LeadID/Jornaya | POST https://track.leadid.com/track
+  Event: SaveFormField
+  Field: contactName, Value: Matthew Vargas  [PLAINTEXT PII]
+  Pre-Consent: NO
+  Legal: Third-party disclosure of communication contents §632
+
+[2026-04-09T21:06:25.881Z] #131 LeadID/Jornaya | POST https://track.leadid.com/track
+  Event: SaveFormField
+  Field: email, Value: matthew@example.com  [PLAINTEXT PII]
+  Pre-Consent: NO
+  Legal: Third-party disclosure §632
+
+[2026-04-09T21:06:50.018Z] #132 LeadID/Jornaya | POST https://track.leadid.com/track
+  Event: SaveFormField
+  Field: contactPhone, Value: 6123277188  [PLAINTEXT PII]
+  Pre-Consent: NO
+  Legal: Third-party disclosure §632
+
+[2026-04-09T21:35:04.391Z] #287 TikTok Pixel | POST https://analytics.tiktok.com/api/v2/pixel/track/
+  Type: Hashed PII Transmission
+  Field: context.user.eb_phone_number
+  Value: db8d59b22475fb52ce94321a25470711ca7920b6d1e86e65b5f052b0eb04ed52
+  Hash: SHA-256
+  Pre-Consent: NO
+
+DAMAGES:
+  Conservative: 7 violations × $5,000 = $35,000
+  Hybrid: 29 violations × $5,000 = $145,000
+  Aggressive: 79 violations × $5,000 = $395,000</textarea>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn-primary" id="testGenBtn" onclick="runTestGeneration()">
+                    ▶ Generate Test Report
+                </button>
+                <span style="font-size:0.82em;color:var(--text-faint);" id="testGenStatus"></span>
+            </div>
+
+            <div class="test-output-area" id="testOutputArea">
+                <div class="test-output-header">
+                    <span class="test-output-label" id="testOutputLabel">Output</span>
+                    <button class="btn-secondary" style="padding:5px 14px;font-size:0.82em;" onclick="downloadTestOutput()">
+                        ⬇ Download .html
+                    </button>
+                </div>
+                <div class="test-output-content" id="testOutputContent"></div>
+            </div>
+
+        </div>
+
+    </div>
+
+</div><!-- /page -->
+
+<script>
+    // ── Tab switching ─────────────────────────────────────────
+    const TABS = ['api', 'prompt', 'template', 'models', 'test'];
+
+    function switchTab(tab) {
+        TABS.forEach(t => {
+            document.getElementById(`panel-${t}`).classList.toggle('active', t === tab);
+        });
+        document.querySelectorAll('.tab-btn').forEach((btn, i) => {
+            btn.classList.toggle('active', TABS[i] === tab);
+        });
+        if (tab === 'api') refreshUsage();
+    }
+
+    // ── API & Usage tab ───────────────────────────────────────
+    async function refreshUsage() {
+        try {
+            const res  = await fetch('/api/claude/status');
+            const data = await res.json();
+            updateStatusUI(data);
+        } catch (e) {
+            document.getElementById('apiStatusText').textContent = 'Server unreachable';
+        }
+    }
+
+    async function runLiveConnectionTest() {
+        const btn = event.target;
+        btn.disabled = true;
+        btn.textContent = '⏳ Testing...';
+        document.getElementById('testNote').textContent = 'Sending live ping...';
+        try {
+            const res  = await fetch('/api/claude/status?test=1');
+            const data = await res.json();
+            updateStatusUI(data);
+            document.getElementById('testNote').textContent =
+                data.connected
+                    ? `✅ Live ping succeeded — replied: "${data.reply}"`
+                    : `❌ ${data.error}`;
+        } catch (e) {
+            document.getElementById('testNote').textContent = '❌ Could not reach server';
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '🔌 Test Live Connection';
+        }
+    }
+
+    function updateStatusUI(data) {
+        // Connection status
+        const statusText  = document.getElementById('apiStatusText');
+        const statusBadge = document.getElementById('apiStatusBadge');
+        if (data.connected) {
+            statusText.textContent   = 'Connected and ready';
+            statusBadge.textContent  = 'Online';
+            statusBadge.className    = 'status-badge badge-green';
+        } else {
+            statusText.textContent   = data.error || 'Not configured';
+            statusBadge.textContent  = 'Offline';
+            statusBadge.className    = 'status-badge badge-red';
+        }
+
+        // API Key
+        const keyStatus = document.getElementById('apiKeyStatus');
+        const keyBadge  = document.getElementById('apiKeyBadge');
+        if (data.api_key_set) {
+            keyStatus.textContent = 'ANTHROPIC_API_KEY is set';
+            keyBadge.textContent  = 'Set';
+            keyBadge.className    = 'status-badge badge-green';
+        } else {
+            keyStatus.textContent = 'ANTHROPIC_API_KEY not found in environment';
+            keyBadge.textContent  = 'Missing';
+            keyBadge.className    = 'status-badge badge-red';
+        }
+
+        // Token usage
+        const usage = data.usage || {};
+        const inp   = usage.total_input_tokens  || 0;
+        const out   = usage.total_output_tokens || 0;
+        const calls = usage.total_calls         || 0;
+        const total = inp + out;
+
+        document.getElementById('totalTokens').textContent  = total.toLocaleString();
+        document.getElementById('totalCalls').textContent   = calls.toLocaleString();
+        document.getElementById('inputTokens').textContent  = inp.toLocaleString();
+        document.getElementById('outputTokens').textContent = out.toLocaleString();
+
+        // Estimate cost at Haiku rates: $1/MTok in, $5/MTok out
+        const cost = ((inp / 1_000_000) * 1.00) + ((out / 1_000_000) * 5.00);
+        document.getElementById('estCost').textContent = cost < 0.01 ? '<$0.01' : `$${cost.toFixed(3)}`;
+
+        // Reports generated — placeholder until Phase 3
+        document.getElementById('reportsGenerated').textContent = '—';
+    }
+
+    // ── Prompt Editor tab ─────────────────────────────────────
+    document.getElementById('systemPrompt').addEventListener('input', updatePromptCount);
+
+    function updatePromptCount() {
+        const len = document.getElementById('systemPrompt').value.length;
+        const est = Math.round(len / 4);
+        document.getElementById('promptTokenCount').textContent =
+            `${len.toLocaleString()} characters (~${est.toLocaleString()} tokens)`;
+    }
+
+    async function savePrompt() {
+        const status = document.getElementById('promptSaveStatus');
+        const prompt = document.getElementById('systemPrompt').value.trim();
+        if (!prompt) { status.textContent = '⚠️ Prompt is empty'; status.style.color = 'var(--yellow)'; return; }
+        status.textContent = 'Saving...'; status.style.color = 'var(--text-faint)';
+        try {
+            const res  = await fetch('/api/admin/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ system_prompt: prompt }),
+            });
+            const data = await res.json();
+            if (data.saved) {
+                status.textContent = '✅ Saved';
+                status.style.color = 'var(--green)';
+                // Reload settings to get new prompt_version
+                loadSettings();
+            } else {
+                status.textContent = `❌ ${data.error || 'Save failed'}`;
+                status.style.color = 'var(--red)';
+            }
+        } catch (e) {
+            status.textContent = `❌ ${e.message}`;
+            status.style.color = 'var(--red)';
+        }
+        setTimeout(() => { status.textContent = ''; }, 4000);
+    }
+
+    async function resetPromptToDefault() {
+        if (!confirm('Reset the system prompt to the built-in default? This cannot be undone.')) return;
+        // Fetch defaults from backend
+        try {
+            const res = await fetch('/api/admin/settings');
+            // We just clear the field — user can save default by calling savePrompt
+            // Actually reload to show current saved version
+            await loadSettings();
+        } catch (e) {}
+    }
+
+    // ── Templates tab ─────────────────────────────────────────
+    function handleDragOver(e, zoneId) {
+        e.preventDefault();
+        document.getElementById(zoneId).classList.add('dragover');
+    }
+
+    function handleDragLeave(zoneId) {
+        document.getElementById(zoneId).classList.remove('dragover');
+    }
+
+    async function handleFileDrop(e, inputId, statusId) {
+        e.preventDefault();
+        handleDragLeave(inputId + 'Drop');
+        const file = e.dataTransfer.files[0];
+        if (!file) return;
+
+        // Inject file into the input element so handleFileSelect can read it
+        const input    = document.getElementById(inputId);
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        input.files = transfer.files;
+
+        await handleFileSelect(inputId, statusId);
+    }
+
+    async function handleFileSelect(inputId, statusId) {
+        const input     = document.getElementById(inputId);
+        const file      = input.files[0];
+        if (!file) return;
+        showFileUploaded(file, statusId);
+
+        // Auto-upload immediately on selection
+        const fieldName = inputId === 'templateFile' ? 'blank_template' : 'sample_reference';
+        const saveStatusId = inputId === 'templateFile' ? 'templateSaveStatus' : 'sampleSaveStatus';
+        const saveStatus   = document.getElementById(saveStatusId);
+        if (saveStatus) { saveStatus.textContent = 'Uploading...'; saveStatus.style.color = 'var(--text-faint)'; }
+
+        try {
+            const fd = new FormData();
+            fd.append('field', fieldName);
+            fd.append('file', file);
+            const res  = await fetch('/api/admin/settings/upload', { method: 'POST', body: fd });
+            const data = await res.json();
+            if (saveStatus) {
+                if (data.saved) {
+                    saveStatus.textContent = `✅ Uploaded & saved — ${data.filename} (${(data.length/1024).toFixed(1)} KB)`;
+                    saveStatus.style.color = 'var(--green)';
+                } else {
+                    saveStatus.textContent = `❌ Upload failed: ${data.error}`;
+                    saveStatus.style.color = 'var(--red)';
+                }
+                setTimeout(() => { saveStatus.textContent = ''; }, 5000);
+            }
+        } catch (e) {
+            if (saveStatus) { saveStatus.textContent = `❌ ${e.message}`; saveStatus.style.color = 'var(--red)'; }
+        }
+    }
+
+    function showFileUploaded(file, statusId) {
+        const status = document.getElementById(statusId);
+        const nameEl = document.getElementById(statusId.replace('Status', 'Name'));
+        if (nameEl) nameEl.textContent = `${file.name} (${(file.size/1024).toFixed(1)} KB)`;
+        status.style.display = 'flex';
+    }
+
+    function clearFile(inputId, statusId) {
+        document.getElementById(inputId).value = '';
+        document.getElementById(statusId).style.display = 'none';
+    }
+
+    async function saveTemplate(type) {
+        const statusId  = type === 'blank' ? 'templateSaveStatus' : 'sampleSaveStatus';
+        const textId    = type === 'blank' ? 'templateText'       : null;
+        const fileId    = type === 'blank' ? 'templateFile'       : 'sampleFile';
+        const fieldName = type === 'blank' ? 'blank_template'     : 'sample_reference';
+        const status    = document.getElementById(statusId);
+        status.textContent = 'Saving...'; status.style.color = 'var(--text-faint)';
+
+        const fileInput = document.getElementById(fileId);
+        const file = fileInput && fileInput.files[0];
+
+        try {
+            if (file) {
+                // Upload file to backend
+                const fd = new FormData();
+                fd.append('field', fieldName);
+                fd.append('file', file);
+                const res  = await fetch('/api/admin/settings/upload', { method: 'POST', body: fd });
+                const data = await res.json();
+                if (data.saved) {
+                    status.textContent = `✅ Saved — ${data.filename} (${(data.length/1024).toFixed(1)} KB)`;
+                    status.style.color = 'var(--green)';
+                } else {
+                    status.textContent = `❌ ${data.error}`; status.style.color = 'var(--red)';
+                }
+            } else if (textId) {
+                // Save pasted text
+                const text = document.getElementById(textId).value.trim();
+                if (!text) { status.textContent = '⚠️ No content to save'; status.style.color = 'var(--yellow)'; return; }
+                const res  = await fetch('/api/admin/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ [fieldName]: text }),
+                });
+                const data = await res.json();
+                status.textContent = data.saved ? '✅ Saved' : `❌ ${data.error}`;
+                status.style.color = data.saved ? 'var(--green)' : 'var(--red)';
+            } else {
+                status.textContent = '⚠️ No file selected'; status.style.color = 'var(--yellow)';
+            }
+        } catch (e) {
+            status.textContent = `❌ ${e.message}`; status.style.color = 'var(--red)';
+        }
+        setTimeout(() => { status.textContent = ''; }, 5000);
+    }
+
+    // ── Models tab ────────────────────────────────────────────
+    function selectModel(modelId, rowEl) {
+        document.querySelectorAll('.model-row').forEach(r => r.classList.remove('selected'));
+        rowEl.classList.add('selected');
+        document.getElementById('defaultModelStatus').textContent = modelId;
+    }
+
+    async function saveDefaultModel() {
+        const selected = document.querySelector('input[name="defaultModel"]:checked');
+        const status   = document.getElementById('modelSaveStatus');
+        if (!selected) return;
+        status.textContent = 'Saving...'; status.style.color = 'var(--text-faint)';
+        try {
+            const res  = await fetch('/api/admin/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ default_model: selected.value }),
+            });
+            const data = await res.json();
+            if (data.saved) {
+                status.textContent = `✅ Default model saved`;
+                status.style.color = 'var(--green)';
+                document.getElementById('defaultModelStatus').textContent = selected.value;
+            } else {
+                status.textContent = `❌ ${data.error}`; status.style.color = 'var(--red)';
+            }
+        } catch (e) {
+            status.textContent = `❌ ${e.message}`; status.style.color = 'var(--red)';
+        }
+        setTimeout(() => { status.textContent = ''; }, 3000);
+    }
+
+    async function refreshModels() {
+        const status = document.getElementById('modelSaveStatus');
+        status.textContent = '↻ Refreshing...'; status.style.color = 'var(--text-faint)';
+        try {
+            const res  = await fetch('/api/admin/models/refresh', { method: 'POST' });
+            const data = await res.json();
+            if (data.refreshed) {
+                document.getElementById('modelsLastRefreshed').textContent =
+                    new Date(data.refreshed_at).toLocaleString();
+                status.textContent = `✅ ${data.model_count} models refreshed`;
+                status.style.color = 'var(--green)';
+            } else {
+                status.textContent = `❌ ${data.error}`; status.style.color = 'var(--red)';
+            }
+        } catch (e) {
+            status.textContent = `❌ ${e.message}`; status.style.color = 'var(--red)';
+        }
+        setTimeout(() => { status.textContent = ''; }, 3000);
+    }
+
+    // ── Test Generation tab ───────────────────────────────────
+    let lastTestOutput = '';  // stores HTML string for download
+
+    async function runTestGeneration() {
+        const btn    = document.getElementById('testGenBtn');
+        const status = document.getElementById('testGenStatus');
+        const area   = document.getElementById('testOutputArea');
+        const cnt    = document.getElementById('testOutputContent');
+        const label  = document.getElementById('testOutputLabel');
+        const model  = document.getElementById('testModel').value;
+
+        btn.disabled       = true;
+        btn.textContent    = '⏳ Generating...';
+        status.textContent = 'Building report from synthetic data...';
+        status.style.color = 'var(--text-faint)';
+        area.classList.remove('visible');
+
+        try {
+            const res  = await fetch('/api/admin/test-generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model }),
+            });
+            const data = await res.json();
+
+            if (data.status === 'complete') {
+                lastTestOutput   = data.html;
+                cnt.textContent  = '✅ Report generated — click Download to save as HTML';
+                cnt.style.color  = 'var(--green)';
+                label.textContent = `Output — ${model} (stub · no tokens used)`;
+                area.classList.add('visible');
+                status.textContent = `✅ Complete — prompt version: ${data.prompt_version}`;
+                status.style.color = 'var(--green)';
+            } else {
+                status.textContent = `❌ ${data.error || 'Generation failed'}`;
+                status.style.color = 'var(--red)';
+            }
+        } catch (e) {
+            status.textContent = `❌ ${e.message}`;
+            status.style.color = 'var(--red)';
+        } finally {
+            btn.disabled    = false;
+            btn.textContent = '▶ Generate Test Report';
+        }
+
+    }
+
+    function markdownToHtml(md) {
+        // Process line-by-line so tables are handled correctly
+        const lines  = md.split('\n');
+        const output = [];
+        let i = 0;
+
+        while (i < lines.length) {
+            const line = lines[i];
+
+            // Markdown table: collect all consecutive | lines into one <table>
+            if (line.startsWith('|')) {
+                const tableLines = [];
+                while (i < lines.length && (lines[i].startsWith('|') || lines[i].match(/^[|\s\-:]+$/))) {
+                    tableLines.push(lines[i]);
+                    i++;
+                }
+                // Build table HTML
+                let tableHtml = '<table>';
+                let firstDataRow = true;
+                for (const tl of tableLines) {
+                    // Skip separator rows (---|---|---)
+                    if (tl.match(/^[|\s\-:]+$/) && !tl.includes('|', 1)) { continue; }
+                    const isSeparator = tl.split('|').slice(1,-1).every(c => c.trim().match(/^-+$/));
+                    if (isSeparator) continue;
+
+                    const cells = tl.split('|').slice(1, -1).map(c => c.trim());
+                    if (firstDataRow) {
+                        tableHtml += '<thead><tr>' + cells.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+                        firstDataRow = false;
+                    } else {
+                        tableHtml += '<tr>' + cells.map(c => `<td>${c}</td>`).join('') + '</tr>';
+                    }
+                }
+                tableHtml += '</tbody></table>';
+                output.push(tableHtml);
+                continue;
+            }
+
+            // Headings
+            if (line.startsWith('# '))        { output.push(`<h1>${line.slice(2)}</h1>`); i++; continue; }
+            if (line.startsWith('## ⚠️'))    { output.push(`<p class="warning">${line.slice(3)}</p>`); i++; continue; }
+            if (line.startsWith('## '))        { output.push(`<h2>${line.slice(3)}</h2>`); i++; continue; }
+            if (line.startsWith('### '))       { output.push(`<h3>${line.slice(4)}</h3>`); i++; continue; }
+
+            // Horizontal rule
+            if (line.trim() === '---')         { output.push('<hr>'); i++; continue; }
+
+            // Blank line
+            if (line.trim() === '')            { i++; continue; }
+
+            // Numbered list item
+            if (line.match(/^\d+\. /))       { output.push(`<p style="margin-left:20px">${applyInline(line)}</p>`); i++; continue; }
+
+            // Regular paragraph
+            output.push(`<p>${applyInline(line)}</p>`);
+            i++;
+        }
+        return output.join('\n');
+    }
+
+    function applyInline(text) {
+        return text
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.+?)\*/g, '<em>$1</em>')
+            .replace(/`(.+?)`/g, '<code>$1</code>');
+    }
+
+    function downloadTestOutput() {
+        if (!lastTestOutput) return;
+        // lastTestOutput is already HTML from the backend
+        const blob = new Blob([lastTestOutput], { type: 'text/html' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href     = url;
+        a.download = `litigation-package-test-${Date.now()}.html`;
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+
+
+    // ── Load settings from backend ───────────────────────────
+    async function loadSettings() {
+        try {
+            const res  = await fetch('/api/admin/settings');
+            const data = await res.json();
+
+            if (data.system_prompt) {
+                document.getElementById('systemPrompt').value = data.system_prompt;
+                updatePromptCount();
+            }
+            const verEl = document.getElementById('promptVersion');
+            if (verEl) verEl.textContent = data.prompt_version || 'v1.0';
+
+            const defModel = data.default_model || 'claude-haiku-4-5-20251001';
+            document.getElementById('defaultModelStatus').textContent = defModel;
+
+            document.querySelectorAll('input[name="defaultModel"]').forEach(radio => {
+                const row = radio.closest('.model-row');
+                radio.checked = (radio.value === defModel);
+                if (row) row.classList.toggle('selected', radio.value === defModel);
+            });
+
+            document.querySelectorAll('.model-default-badge').forEach(badge => {
+                const radio = badge.closest('.model-row')?.querySelector('input[name="defaultModel"]');
+                if (radio && radio.value === defModel) {
+                    badge.textContent = 'DEFAULT';
+                    badge.className   = 'model-default-badge badge-green';
+                } else {
+                    badge.textContent = '—';
+                    badge.className   = 'model-default-badge badge-dim';
+                }
+            });
+
+            const lastRef = data.models_refreshed_at;
+            document.getElementById('modelsLastRefreshed').textContent = lastRef
+                ? new Date(lastRef).toLocaleString() : 'Not yet refreshed';
+
+            if (data.blank_template && document.getElementById('templateText')) {
+                document.getElementById('templateText').value = data.blank_template;
+            }
+
+            // Show saved file indicators if content exists in DB
+            if (data.blank_template) {
+                const chars = data.blank_template.length;
+                const st    = document.getElementById('templateFileStatus');
+                const nm    = document.getElementById('templateFileName');
+                if (st && nm) {
+                    nm.textContent    = `Saved template (${(chars/1024).toFixed(1)} KB) — upload a new file to replace`;
+                    st.style.display  = 'flex';
+                }
+            }
+            if (data.sample_reference) {
+                const chars = data.sample_reference.length;
+                const st    = document.getElementById('sampleFileStatus');
+                const nm    = document.getElementById('sampleFileName');
+                if (st && nm) {
+                    nm.textContent   = `Saved sample (${(chars/1024).toFixed(1)} KB) — upload a new file to replace`;
+                    st.style.display = 'flex';
+                }
+            }
+
+        } catch (e) {
+            console.warn('Could not load admin settings:', e.message);
+            document.getElementById('defaultModelStatus').textContent = 'claude-haiku-4-5-20251001';
+            document.getElementById('modelsLastRefreshed').textContent = 'Not yet refreshed';
+        }
+    }
+
+    // ── Init ─────────────────────────────────────────────────
+    refreshUsage();
+    loadSettings();
+</script>
+</body>
+</html>

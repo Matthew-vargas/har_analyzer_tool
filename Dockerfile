@@ -15,6 +15,7 @@ RUN mkdir -p static
 COPY static/index.html static/index.html
 COPY static/bulk.html static/bulk.html
 COPY static/history.html static/history.html
+COPY static/admin.html static/admin.html
 
 # Expose port (Render overrides with PORT env var)
 EXPOSE 5000

@@ -813,6 +813,7 @@
             <a href="/" class="nav-link active">Single File</a>
             <a href="/bulk" class="nav-link">Bulk Ranker</a>
             <a href="/history" class="nav-link">History</a>
+            <a href="/admin" class="nav-link">Admin</a>
         </div>
     </div>
 
@@ -822,6 +823,29 @@
             <p>Phase 1: LeadID Detection</p>
         </div>
         
+        <!-- Claude API status badge -->
+        <div id="claudeStatusBar" style="
+            display:flex; align-items:center; justify-content:space-between;
+            background:#1f2436; border:1px solid #2a3050; border-radius:8px;
+            padding:10px 16px; margin-bottom:16px; font-size:0.85em; gap:12px;
+        ">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span id="claudeStatusDot" style="font-size:1em;">⚪</span>
+                <span id="claudeStatusText" style="color:#8892b0;">Checking Claude API...</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:16px;">
+                <span id="claudeTokenCount" style="font-family:'IBM Plex Mono',monospace; font-size:0.82em; color:#4a5578;"></span>
+                <button onclick="testClaudeConnection()" style="
+                    background:none; border:1px solid #2a3050; color:#8892b0;
+                    padding:4px 12px; border-radius:5px; cursor:pointer;
+                    font-size:0.82em; transition:all 0.15s;
+                " onmouseover="this.style.borderColor='#7c6ff7';this.style.color='#7c6ff7'"
+                   onmouseout="this.style.borderColor='#2a3050';this.style.color='#8892b0'">
+                    Test Connection
+                </button>
+            </div>
+        </div>
+
         <div id="uploadSection" class="upload-section">
             <div id="errorMessage" class="error-message"></div>
             
@@ -1410,6 +1434,73 @@
             results.classList.remove('show');
             fileInput.value = '';
         }
+
+        // ── Claude API status ─────────────────────────────────────────────
+        // checkClaudeStatus() — free call, no tokens spent, just checks config
+        async function checkClaudeStatus() {
+            const dot  = document.getElementById('claudeStatusDot');
+            const text = document.getElementById('claudeStatusText');
+            const tok  = document.getElementById('claudeTokenCount');
+            try {
+                const res  = await fetch('/api/claude/status');
+                const data = await res.json();
+                if (data.connected) {
+                    dot.textContent  = '🟢';
+                    text.textContent = 'Claude API ready — click Test Connection to send a live ping';
+                    text.style.color = '#4caf7d';
+                } else {
+                    dot.textContent  = '🔴';
+                    text.textContent = data.error || 'Claude API not configured';
+                    text.style.color = '#e05c5c';
+                }
+                updateTokenDisplay(data.usage);
+            } catch (err) {
+                dot.textContent  = '⚪';
+                text.textContent = 'Claude API — status unavailable';
+                text.style.color = '#8892b0';
+            }
+        }
+
+        // testClaudeConnection() — sends a live ping (?test=1), spends ~10 tokens
+        async function testClaudeConnection() {
+            const dot  = document.getElementById('claudeStatusDot');
+            const text = document.getElementById('claudeStatusText');
+            dot.textContent  = '⚪';
+            text.textContent = 'Sending live ping...';
+            text.style.color = '#8892b0';
+            try {
+                const res  = await fetch('/api/claude/status?test=1');
+                const data = await res.json();
+                if (data.connected) {
+                    dot.textContent  = '🟢';
+                    text.textContent = `Claude API connected ✓  (${data.model_tested} replied: "${data.reply}")`;
+                    text.style.color = '#4caf7d';
+                } else {
+                    dot.textContent  = '🔴';
+                    text.textContent = data.error || 'Live ping failed';
+                    text.style.color = '#e05c5c';
+                }
+                updateTokenDisplay(data.usage);
+            } catch (err) {
+                dot.textContent  = '🔴';
+                text.textContent = 'Could not reach server';
+                text.style.color = '#e05c5c';
+            }
+        }
+
+        function updateTokenDisplay(usage) {
+            const tok = document.getElementById('claudeTokenCount');
+            if (!usage) return;
+            const total = (usage.total_input_tokens || 0) + (usage.total_output_tokens || 0);
+            tok.textContent = total > 0
+                ? `${total.toLocaleString()} tokens used (${usage.total_calls} calls)`
+                : '';
+            tok.style.color = '#4a5578';
+        }
+
+        // Free status check on page load — no tokens spent
+        checkClaudeStatus();
+
     </script>
 </body>
 </html>
