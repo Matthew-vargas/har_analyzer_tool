@@ -800,6 +800,103 @@
             border-color: rgba(255,255,255,0.3);
         }
 
+
+        /* ── Generate Litigation Package Panel ──────────────────── */
+        .generate-panel {
+            background: #181c27;
+            border: 1px solid #2a3050;
+            border-left: 3px solid #7c6ff7;
+            border-radius: 10px;
+            padding: 24px 28px;
+            margin: 24px 0;
+            font-family: 'IBM Plex Sans', sans-serif;
+        }
+
+        .generate-panel-title {
+            font-size: 1em;
+            font-weight: 700;
+            color: #e2e6f3;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .generate-panel-subtitle {
+            font-size: 0.83em;
+            color: #8892b0;
+            margin-bottom: 20px;
+        }
+
+        .generate-panel-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+
+        .generate-model-label {
+            font-size: 0.83em;
+            color: #8892b0;
+            white-space: nowrap;
+        }
+
+        .generate-model-select {
+            background: #1f2436;
+            border: 1px solid #2a3050;
+            border-radius: 6px;
+            color: #e2e6f3;
+            font-size: 0.85em;
+            padding: 7px 12px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .generate-cost-est {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.78em;
+            color: #4a5578;
+        }
+
+        .generate-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 22px;
+            background: #7c6ff7;
+            color: white;
+            border: none;
+            border-radius: 7px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 0.9em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        .generate-btn:hover:not(:disabled) { background: #9589ff; }
+        .generate-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .generate-warning {
+            font-size: 0.78em;
+            color: #d4b84a;
+            margin-top: 4px;
+        }
+
+        .generate-status {
+            font-size: 0.85em;
+            color: #8892b0;
+            margin-top: 10px;
+            min-height: 20px;
+        }
+
+        .generate-not-configured {
+            font-size: 0.85em;
+            color: #8892b0;
+            padding: 8px 0;
+        }
+
     </style>
 </head>
 <body>
@@ -956,6 +1053,7 @@
                 
                 displayResults(data);
                 showSavedBanner(data.analysis_id);
+                showGeneratePanel(data.analysis_id, data.claude_enabled);
             } catch (error) {
                 console.error('Error:', error);
                 showError(`Error: ${error.message}`);
@@ -1500,6 +1598,116 @@
 
         // Free status check on page load — no tokens spent
         checkClaudeStatus();
+
+
+        // ── Generate Litigation Package ───────────────────────────
+        let _generateAnalysisId = null;
+
+        async function showGeneratePanel(analysisId, claudeEnabled) {
+            _generateAnalysisId = analysisId;
+
+            // Remove any existing panel
+            const existing = document.getElementById('generatePanel');
+            if (existing) existing.remove();
+
+            // Fetch default model from admin settings
+            let defaultModel = 'claude-haiku-4-5-20251001';
+            try {
+                const s = await fetch('/api/admin/settings');
+                const d = await s.json();
+                if (d.default_model) defaultModel = d.default_model;
+            } catch (e) {}
+
+            const panel = document.createElement('div');
+            panel.id    = 'generatePanel';
+            panel.className = 'generate-panel';
+
+            if (!claudeEnabled || !analysisId) {
+                panel.innerHTML = `
+                    <div class="generate-panel-title">📄 Generate Litigation Package</div>
+                    <div class="generate-not-configured">
+                        ⚠️ Claude API not configured — set <code>ANTHROPIC_API_KEY</code> to enable report generation.
+                    </div>`;
+            } else {
+                const models = [
+                    { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5',  cost: '~$0.03–0.08' },
+                    { id: 'claude-sonnet-4-6',          label: 'Claude Sonnet 4.6', cost: '~$0.10–0.22' },
+                    { id: 'claude-opus-4-6',            label: 'Claude Opus 4.6',   cost: '~$0.15–0.35' },
+                ];
+                const opts = models.map(m =>
+                    `<option value="${m.id}" ${m.id === defaultModel ? 'selected' : ''}>${m.label} — ${m.cost}</option>`
+                ).join('');
+
+                panel.innerHTML = `
+                    <div class="generate-panel-title">📄 Generate Litigation Package</div>
+                    <div class="generate-panel-subtitle">
+                        Uses Claude to produce a court-ready litigation package from this analysis.
+                    </div>
+                    <div class="generate-panel-row">
+                        <span class="generate-model-label">Model:</span>
+                        <select class="generate-model-select" id="generateModel">${opts}</select>
+                        <span class="generate-cost-est" id="generateCostEst"></span>
+                    </div>
+                    <button class="generate-btn" id="generateBtn" onclick="generateReport()">
+                        ▶ Generate &amp; Download HTML
+                    </button>
+                    <div class="generate-warning">⚠️ Review output before use in legal proceedings</div>
+                    <div class="generate-status" id="generateStatus"></div>`;
+            }
+
+            // Insert after the results div
+            const resultsDiv = document.getElementById('results');
+            if (resultsDiv && resultsDiv.nextSibling) {
+                resultsDiv.parentNode.insertBefore(panel, resultsDiv.nextSibling);
+            } else if (resultsDiv) {
+                resultsDiv.parentNode.appendChild(panel);
+            }
+        }
+
+        async function generateReport() {
+            if (!_generateAnalysisId) return;
+            const btn    = document.getElementById('generateBtn');
+            const status = document.getElementById('generateStatus');
+            const model  = document.getElementById('generateModel')?.value || 'claude-haiku-4-5-20251001';
+
+            btn.disabled      = true;
+            btn.textContent   = '⏳ Generating...';
+            status.textContent = 'Sending to Claude — this may take 15–30 seconds...';
+            status.style.color = '#8892b0';
+
+            try {
+                const res  = await fetch(`/api/generate-report/${_generateAnalysisId}`, {
+                    method:  'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body:    JSON.stringify({ model }),
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(data.error || `HTTP ${res.status}`);
+                }
+
+                // Trigger download
+                const blob = new Blob([data.html], { type: 'text/html' });
+                const url  = URL.createObjectURL(blob);
+                const a    = document.createElement('a');
+                a.href     = url;
+                a.download = `litigation-package-${_generateAnalysisId.slice(0,8)}.html`;
+                a.click();
+                URL.revokeObjectURL(url);
+
+                status.textContent = `✅ Report generated — ${data.input_tokens.toLocaleString()} input + ${data.output_tokens.toLocaleString()} output tokens`;
+                status.style.color = '#4caf7d';
+                btn.textContent    = '▶ Generate Again';
+                btn.disabled       = false;
+
+            } catch (err) {
+                status.textContent = `❌ ${err.message}`;
+                status.style.color = '#e05c5c';
+                btn.textContent    = '▶ Generate & Download HTML';
+                btn.disabled       = false;
+            }
+        }
 
     </script>
 </body>

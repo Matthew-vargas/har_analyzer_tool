@@ -30,16 +30,19 @@ try:
         # Collections
         _col_single    = _db['single_analyses']
         _col_bulk      = _db['bulk_rankings']
-        _col_settings  = _db['admin_settings']   # single upserted doc
-        _col_token_use = _db['token_usage']       # single upserted doc
+        _col_settings  = _db['admin_settings']      # single upserted doc
+        _col_token_use = _db['token_usage']          # single upserted doc
+        _col_reports   = _db['litigation_reports']   # Phase 3
 
         # TTL index: auto-expire documents after 90 days
         _col_single.create_index('created_at', expireAfterSeconds=7776000)
         _col_bulk.create_index('created_at',   expireAfterSeconds=7776000)
+        _col_reports.create_index('created_at', expireAfterSeconds=7776000)
 
         # Query indexes
         _col_single.create_index([('created_at', DESCENDING)])
         _col_bulk.create_index([('created_at', DESCENDING)])
+        _col_reports.create_index([('analysis_id', 1)])
 
         MONGO_ENABLED = True
         print('✅ MongoDB connected — OceansEdge cluster')
@@ -1256,9 +1259,218 @@ def analyze_har_simple(har_data):
     }
 
 
-def save_single_analysis(filename, results, risk):
+def build_litigation_extract(results, risk):
+    """
+    Build a compact, structured text representation of the HAR analysis
+    for use as the Claude API user message. Extracts everything Claude
+    needs to produce a litigation package — no re-parsing of the HAR.
+
+    Returns a plain-text string (~8-15K tokens) covering:
+      - Domain, session date, consent detection
+      - Full vendor timeline with timestamps, HAR indices, PII values
+      - First-party PII collected
+      - Identifier propagation across vendors
+      - Damages (conservative / hybrid / aggressive)
+    """
+    vendors      = results.get('vendors', {})
+    domain       = results.get('first_party', 'Unknown')
+    session_date = results.get('session_date', 'Unknown')
+    consent      = 'NO (no consent mechanism detected in session)'
+
+    lines = []
+    lines.append(f"Domain: {domain}")
+    lines.append(f"Session Date: {session_date}")
+    lines.append(f"Consent Detected: {consent}")
+    lines.append(f"Risk Score: {risk['score']}/100 [{risk['grade_label']}]")
+    lines.append(f"Estimated Damages: ${risk['estimated_damages']:,}")
+    lines.append("")
+
+    # ── Vendor timeline ───────────────────────────────────────────────────────
+    lines.append("=" * 60)
+    lines.append("VENDOR TIMELINE (chronological)")
+    lines.append("=" * 60)
+
+    # Collect all requests across all vendors, sorted by timestamp
+    all_events = []
+    for vkey, vdata in vendors.items():
+        vname = vdata['name']
+        for req in vdata.get('all_requests', []):
+            all_events.append({
+                'timestamp': req.get('timestamp', ''),
+                'vendor':    vname,
+                'method':    req.get('method', ''),
+                'url':       req.get('url', ''),
+                'has_pii':   req.get('has_pii', False),
+            })
+        for pii in vdata.get('pii', []):
+            # PII items have their own timestamp and URL
+            all_events.append({
+                'timestamp': pii.get('timestamp', ''),
+                'vendor':    vname,
+                'method':    pii.get('request_details', {}).get('method', ''),
+                'url':       pii.get('url', ''),
+                'has_pii':   True,
+                'pii_item':  pii,
+            })
+
+    # Sort by timestamp
+    all_events.sort(key=lambda x: x.get('timestamp', ''))
+
+    # Deduplicate — use (vendor, url, timestamp) as key, prefer pii_item entries
+    seen_events = {}
+    for ev in all_events:
+        key = (ev['vendor'], ev['url'][:60], ev['timestamp'][:19])
+        if key not in seen_events or ev.get('pii_item'):
+            seen_events[key] = ev
+
+    for idx, ev in enumerate(seen_events.values(), start=1):
+        ts      = ev.get('timestamp', '')[:23]
+        vendor  = ev['vendor']
+        method  = ev.get('method', 'GET')
+        url     = ev.get('url', '')
+        pii     = ev.get('pii_item')
+
+        lines.append("")
+        lines.append(f"[{ts}] #{idx} {vendor} | {method} {url[:80]}")
+
+        if pii:
+            ptype = pii.get('type', '')
+            is_plain  = 'Hashed' not in ptype
+            is_hashed = 'Hashed' in ptype
+            lines.append(f"  Type: {'PLAINTEXT PII' if is_plain else 'HASHED PII'}")
+            lines.append(f"  Field: {pii.get('field', '')} → {pii.get('value', '')}")
+            legal = pii.get('legal_context', {})
+            if legal.get('cipa_elements'):
+                lines.append(f"  Legal: {legal['cipa_elements'][0] if legal['cipa_elements'] else ''}")
+        else:
+            lines.append(f"  Type: Session/Identifier/Tracking")
+
+    lines.append("")
+
+    # ── First-party PII ───────────────────────────────────────────────────────
+    fp = results.get('first_party_pii', {})
+    fp_items = fp.get('pii_items', [])
+    if fp_items:
+        lines.append("=" * 60)
+        lines.append("FIRST-PARTY PII COLLECTED (form fields submitted)")
+        lines.append("=" * 60)
+        for item in fp_items:
+            lines.append(f"  • {item.get('type', '')}: {item.get('value', '')}")
+        lines.append("")
+
+    # ── Vendor PII summary ────────────────────────────────────────────────────
+    # Pre-compute verified hash mappings.
+    # For each first-party plaintext value, compute SHA-256 / SHA-1 / MD5
+    # and check whether any third-party hash matches. Only flag as verified
+    # if the cryptographic check passes — never assert linkage otherwise.
+    import hashlib
+
+    def _hashes_of(plaintext):
+        """Return set of common hash representations for a plaintext value."""
+        encoded = plaintext.encode('utf-8')
+        return {
+            hashlib.sha256(encoded).hexdigest(),
+            hashlib.sha1(encoded).hexdigest(),
+            hashlib.md5(encoded).hexdigest(),
+            # Phone numbers are sometimes normalised before hashing
+            hashlib.sha256(plaintext.replace(' ', '').replace('-', '').encode()).hexdigest(),
+            hashlib.sha256(('+1' + plaintext).encode()).hexdigest(),
+        }
+
+    # Build a map: hash_value → (plaintext_value, plaintext_type)
+    verified_hash_map = {}
+    for item in fp_items:
+        for h in _hashes_of(item.get('value', '')):
+            verified_hash_map[h] = (item.get('value', ''), item.get('type', ''))
+
+    lines.append("=" * 60)
+    lines.append("THIRD-PARTY PII TRANSMISSIONS")
+    lines.append("=" * 60)
+    for vkey, vdata in vendors.items():
+        pii_list = vdata.get('pii', [])
+        if not pii_list:
+            continue
+        lines.append(f"\nVendor: {vdata['name']}")
+        lines.append(f"  Requests: {vdata['request_count']}  |  PII items: {vdata['pii_count']}")
+        for pii in pii_list:
+            ptype  = pii.get('type', '')
+            pval   = pii.get('value', '')
+            field  = pii.get('field', '')
+            ts     = pii.get('timestamp', '')[:23]
+            method = pii.get('request_details', {}).get('method', '')
+
+            # Check if this is a hash and whether we can verify it
+            is_hash = ptype.startswith('Hashed')
+            verified_plaintext = None
+            verified_type      = None
+            if is_hash:
+                # pval may be truncated (e.g. "db8d59b2...") — look for full value
+                # The full value is in the field name or other pii entries
+                full_hash = pval.rstrip('.')
+                if full_hash in verified_hash_map:
+                    verified_plaintext, verified_type = verified_hash_map[full_hash]
+
+            line = f"  [{ts}] {method} | {field} = {pval}  [{ptype}]"
+            if is_hash and verified_plaintext:
+                line += f"  ✓ VERIFIED: matches first-party {verified_type} value"
+            elif is_hash:
+                line += f"  — UNVERIFIED: hash does not match any known first-party plaintext value"
+            lines.append(line)
+    lines.append("")
+
+    # ── Identifier propagation ────────────────────────────────────────────────
+    # Find values that appear across multiple vendors
+    value_to_vendors = {}
+    for vdata in vendors.values():
+        vname = vdata['name']
+        for pii in vdata.get('pii', []):
+            val = pii.get('value', '')
+            if val and len(val) > 4:
+                if val not in value_to_vendors:
+                    value_to_vendors[val] = set()
+                value_to_vendors[val].add(vname)
+
+    cross_vendor = {v: vs for v, vs in value_to_vendors.items() if len(vs) > 1}
+    if cross_vendor:
+        lines.append("=" * 60)
+        lines.append("IDENTIFIER PROPAGATION (values seen across multiple vendors)")
+        lines.append("=" * 60)
+        for val, vendor_set in cross_vendor.items():
+            lines.append(f"  Value: {val[:64]}")
+            lines.append(f"  Seen by: {', '.join(vendor_set)}")
+        lines.append("")
+
+    # ── Damages ───────────────────────────────────────────────────────────────
+    lines.append("=" * 60)
+    lines.append("DAMAGES ANALYSIS")
+    lines.append("=" * 60)
+    bk = risk.get('breakdown', {})
+    lines.append(f"Score breakdown: Plaintext={bk.get('plaintext',0)} | "
+                 f"Hashed={bk.get('hashed',0)} | Damages={bk.get('damages',0)} | "
+                 f"Vendors={bk.get('vendors',0)} | Aggravating={bk.get('aggravating',0)}")
+
+    # Damages tiers (using score-based estimates)
+    score = risk['score']
+    base  = risk['estimated_damages']
+    conservative_val = base
+    hybrid_val       = min(base * 4,  500000)
+    aggressive_val   = min(base * 10, 1000000)
+
+    lines.append(f"  Conservative: ${conservative_val:,}")
+    lines.append(f"  Hybrid:       ${hybrid_val:,}")
+    lines.append(f"  Aggressive:   ${aggressive_val:,}")
+    lines.append("")
+    lines.append("LeadID/Jornaya detected: " + ("YES" if results.get('leadid_detected') else "NO"))
+    lines.append(f"Total requests in session: {results.get('total_requests', 0)}")
+
+    return '\n'.join(lines)
+
+
+def save_single_analysis(filename, results, risk, litigation_extract=None):
     """
     Save a completed single-file analysis summary to MongoDB.
+    Stores the litigation_extract text so it can be retrieved for
+    report generation without re-analyzing the HAR file.
     Non-fatal: if MongoDB is unavailable, logs and returns None.
     Returns the analysis_id string so the frontend can link to it.
     """
@@ -1297,6 +1509,10 @@ def save_single_analysis(filename, results, risk):
             'estimated_damages':     risk['estimated_damages'],
             'top_violations':        risk['top_violations'],
             'breakdown':             risk['breakdown'],
+            # Phase 3: litigation package fields
+            'litigation_extract':    litigation_extract,
+            'has_report':            False,
+            'report_id':             None,
         }
 
         _col_single.insert_one(doc)
@@ -1402,7 +1618,18 @@ Produce all 7 sections in order:
 6. Partial-to-Full Value Reconstruction (tabular)
 7. Damages Analysis (conservative / hybrid / aggressive, tabular with HAR IDs)
 
-Format output as clean Markdown with proper table syntax."""
+Format output as clean Markdown with proper table syntax.
+
+CRITICAL RULE — HASH VERIFICATION:
+The analysis data marks each hashed PII value as either:
+  - "VERIFIED: matches first-party [type] value" — cryptographic match confirmed
+  - "UNVERIFIED: hash does not match any known first-party plaintext value"
+
+You MUST follow these rules strictly:
+- Only assert that a hash corresponds to a specific plaintext value if it is marked VERIFIED
+- If a hash is marked UNVERIFIED, state only that a hashed value was transmitted — do not claim to know what plaintext it represents
+- Never infer or assume a hash-to-plaintext linkage based on proximity of data points alone
+- In the damages analysis, unverified hashes may still be counted as violations but must be described accurately as "unverified hashed transmission" not as a confirmed disclosure of a specific value"""
 
 DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
 
@@ -1979,6 +2206,7 @@ def api_history_single():
                 'first_party_pii_count': 1, 'vendor_pii_count': 1,
                 'score': 1, 'grade': 1, 'grade_label': 1,
                 'estimated_damages': 1, 'top_violations': 1,
+                'has_report': 1, 'report_id': 1,
             }
         ).sort('created_at', DESCENDING).limit(200))
 
@@ -2233,10 +2461,21 @@ def analyze():
         
         # Save to MongoDB and attach analysis_id so frontend can link to history
         risk = compute_risk_score(results)
-        analysis_id = save_single_analysis(file.filename, results, risk)
+
+        # Build litigation extract for Phase 3 report generation
+        try:
+            litigation_extract = build_litigation_extract(results, risk)
+        except Exception as ex:
+            print(f"⚠️  build_litigation_extract failed (non-fatal): {ex}")
+            litigation_extract = None
+
+        analysis_id = save_single_analysis(file.filename, results, risk, litigation_extract)
         if analysis_id:
             results['analysis_id'] = analysis_id
-        
+
+        # Surface whether Claude is available so frontend can show/hide generate button
+        results['claude_enabled'] = CLAUDE_ENABLED
+
         return jsonify(results)
     
     except Exception as e:
@@ -2630,6 +2869,156 @@ def analyze_bulk():
             'X-Accel-Buffering': 'no',
         }
     )
+
+# ── Phase 3: Litigation report routes ────────────────────────────────────────
+
+@app.route('/api/generate-report/<analysis_id>', methods=['POST'])
+def api_generate_report(analysis_id):
+    """
+    Generate a litigation package HTML report for a completed analysis.
+    Loads the litigation_extract from MongoDB, sends to Claude with the
+    saved system prompt and templates, converts Markdown to HTML, stores
+    the result, and returns the HTML for download.
+    """
+    if not CLAUDE_ENABLED:
+        return jsonify({'error': 'Claude API not configured — set ANTHROPIC_API_KEY'}), 503
+
+    if not MONGO_ENABLED:
+        return jsonify({'error': 'Database not available'}), 503
+
+    # Get model from request body (optional — falls back to admin default)
+    data  = request.get_json(silent=True) or {}
+    model = data.get('model') or get_admin_settings().get('default_model', DEFAULT_MODEL)
+
+    # Load litigation extract from MongoDB
+    doc = _col_single.find_one({'analysis_id': analysis_id}, {'_id': 0})
+    if not doc:
+        return jsonify({'error': 'Analysis not found'}), 404
+
+    extract = doc.get('litigation_extract')
+    if not extract:
+        return jsonify({'error': 'No litigation extract found — re-analyze the file to generate one'}), 400
+
+    # Load admin settings (prompt, templates)
+    settings        = get_admin_settings()
+    system_prompt   = settings.get('system_prompt') or DEFAULT_SYSTEM_PROMPT
+    blank_template  = settings.get('blank_template', '')
+    sample_ref      = settings.get('sample_reference', '')
+    prompt_version  = settings.get('prompt_version', 'v1.0')
+
+    # Build user message
+    user_parts = [
+        "Below is the structured HAR analysis data. "
+        "Produce the complete litigation package following your instructions.\n\n",
+        "=" * 60 + "\n",
+        "HAR ANALYSIS DATA:\n",
+        "=" * 60 + "\n",
+        extract,
+    ]
+
+    if blank_template:
+        user_parts += [
+            "\n\n" + "=" * 60 + "\n",
+            "OUTPUT STRUCTURE TEMPLATE (follow this section format):\n",
+            "=" * 60 + "\n",
+            blank_template[:8000],
+        ]
+
+    if sample_ref:
+        user_parts += [
+            "\n\n" + "=" * 60 + "\n",
+            "QUALITY REFERENCE EXAMPLE (match this depth and style):\n",
+            "=" * 60 + "\n",
+            sample_ref[:8000],
+        ]
+
+    user_message = ''.join(user_parts)
+
+    # Call Claude API
+    try:
+        response = _anthropic_client.messages.create(
+            model=model,
+            max_tokens=12000,
+            system=system_prompt,
+            messages=[{'role': 'user', 'content': user_message}]
+        )
+
+        markdown_output = response.content[0].text if response.content else ''
+        input_tokens    = response.usage.input_tokens
+        output_tokens   = response.usage.output_tokens
+
+        track_token_usage(input_tokens, output_tokens)
+
+    except Exception as e:
+        print(f"⚠️  Claude API call failed: {e}")
+        return jsonify({'error': f'Claude API error: {str(e)}'}), 500
+
+    # Convert Markdown to HTML
+    html_content = markdown_to_html(markdown_output)
+
+    # Save report to MongoDB
+    report_id = str(uuid.uuid4())
+    try:
+        _col_reports.insert_one({
+            'report_id':      report_id,
+            'analysis_id':    analysis_id,
+            'created_at':     datetime.now(timezone.utc),
+            'model_used':     model,
+            'prompt_version': prompt_version,
+            'input_tokens':   input_tokens,
+            'output_tokens':  output_tokens,
+            'status':         'complete',
+            'html_content':   html_content,
+        })
+        # Update the single_analyses doc to mark report exists
+        _col_single.update_one(
+            {'analysis_id': analysis_id},
+            {'$set': {'has_report': True, 'report_id': report_id}}
+        )
+        print(f"✅ Litigation report saved: {report_id}")
+    except Exception as e:
+        print(f"⚠️  Report save failed (non-fatal): {e}")
+
+    return jsonify({
+        'report_id':     report_id,
+        'analysis_id':   analysis_id,
+        'model_used':    model,
+        'input_tokens':  input_tokens,
+        'output_tokens': output_tokens,
+        'html':          html_content,
+    })
+
+
+@app.route('/api/reports/count', methods=['GET'])
+def api_reports_count():
+    """Return total number of litigation reports generated."""
+    if not MONGO_ENABLED:
+        return jsonify({'count': 0})
+    try:
+        count = _col_reports.count_documents({})
+        return jsonify({'count': count})
+    except Exception as e:
+        return jsonify({'count': 0, 'error': str(e)})
+
+
+@app.route('/api/reports/<report_id>', methods=['GET'])
+def api_get_report(report_id):
+    """
+    Retrieve a previously generated litigation report by report_id.
+    Returns the stored HTML content for re-download.
+    """
+    if not MONGO_ENABLED:
+        return jsonify({'error': 'Database not available'}), 503
+    try:
+        doc = _col_reports.find_one({'report_id': report_id}, {'_id': 0})
+        if not doc:
+            return jsonify({'error': 'Report not found'}), 404
+        if 'created_at' in doc:
+            doc['created_at'] = doc['created_at'].isoformat()
+        return jsonify(doc)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 # ── Claude / Anthropic helpers ───────────────────────────────────────────────
 

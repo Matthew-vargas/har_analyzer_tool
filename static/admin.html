@@ -994,7 +994,7 @@ DAMAGES:
         }
     }
 
-    function updateStatusUI(data) {
+    async function updateStatusUI(data) {
         // Connection status
         const statusText  = document.getElementById('apiStatusText');
         const statusBadge = document.getElementById('apiStatusBadge');
@@ -1038,7 +1038,15 @@ DAMAGES:
         document.getElementById('estCost').textContent = cost < 0.01 ? '<$0.01' : `$${cost.toFixed(3)}`;
 
         // Reports generated — placeholder until Phase 3
-        document.getElementById('reportsGenerated').textContent = '—';
+        // Fetch report count from litigation_reports collection
+        try {
+            const rr   = await fetch('/api/reports/count');
+            const rd   = await rr.json();
+            document.getElementById('reportsGenerated').textContent =
+                (rd.count !== undefined) ? rd.count.toLocaleString() : '—';
+        } catch (e) {
+            document.getElementById('reportsGenerated').textContent = '—';
+        }
     }
 
     // ── Prompt Editor tab ─────────────────────────────────────

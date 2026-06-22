@@ -1001,6 +1001,7 @@
                                 : `<span class="meta-tag clean">No PII detected</span>`}
                             ${r.leadid_detected ? '<span class="meta-tag leadid">LeadID</span>' : ''}
                             ${damages > 0 ? `<span class="meta-tag damage">$${damages.toLocaleString()}</span>` : ''}
+                            ${r.has_report && r.report_id ? `<span class="meta-tag" style="color:#7c6ff7;border-color:rgba(124,111,247,0.3);background:rgba(124,111,247,0.08);cursor:pointer;" onclick="event.stopPropagation();downloadReport('${r.report_id}')">📄 Report</span>` : ''}
                         </div>
                     </div>
                     <div class="card-right">
@@ -1233,6 +1234,25 @@
                 <div class="empty-title">Could not load results</div>
                 <div class="empty-desc">${escHtml(msg)}</div>
             </div>`;
+    }
+
+    // ── Report download ──────────────────────────────────────
+    async function downloadReport(reportId) {
+        try {
+            const res  = await fetch(`/api/reports/${reportId}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            if (!data.html_content) throw new Error('No HTML content in report');
+            const blob = new Blob([data.html_content], { type: 'text/html' });
+            const url  = URL.createObjectURL(blob);
+            const a    = document.createElement('a');
+            a.href     = url;
+            a.download = `litigation-package-${reportId.slice(0,8)}.html`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            alert(`Could not download report: ${err.message}`);
+        }
     }
 
     // ── Delete helpers ───────────────────────────────────────
