@@ -757,7 +757,13 @@ def find_first_party_domain(har_data):
                 'fastly', 'cloudfront', 'newrelic', 'nr-data',
                 'segment', 'sentry', 'hotjar', 'intercom',
                 'zendesk', 'stripe', 'twilio', 'sendgrid',
-                'clarity.ms', 'hotjar', 'mixpanel', 'heap', 'mouseflow',
+                'mixpanel', 'heap', 'mouseflow',
+                # New session replay / behavioral vendors
+                'clarity.ms',       # now in VENDOR_PATTERNS — keep in skip for domain detection
+                'fullstory.com', 'rs.fullstory.com',
+                'hs-scripts.com', 'hsforms.net', 'hubspot.com',
+                'ct.pinterest.com', 'pinimg.com',
+                'mountain.com', 'datadoghq.com',
             ]
             
             if any(skip in domain.lower() for skip in skip_domains):
@@ -794,35 +800,87 @@ def detect_vendor_requests(entries):
     No reference to the original entry object is retained.
     """
     VENDOR_PATTERNS = {
+        # ── Existing lead capture / PII interceptors ──────────────────────────
         'leadid':    ('LeadID/Jornaya/TrustedForm', 'critical',
-                      ['leadid.com', 'jornaya.com', 'trustedform.com', 'trueleadid.com']),
+                      ['leadid.com', 'jornaya.com', 'trustedform.com', 'trueleadid.com'],
+                      'lead_capture'),
         'google':    ('Google Analytics/Ads', 'high',
                       ['google-analytics.com', 'googletagmanager.com', 'doubleclick.net',
-                       'googlesyndication.com', 'googleadservices.com', '/google/ads', '/gtag/']),
+                       'googlesyndication.com', 'googleadservices.com', '/google/ads', '/gtag/',
+                       'replay.google-analytics.com'],
+                      'analytics_replay'),
         'facebook':  ('Facebook/Meta Pixel', 'critical',
                       ['facebook.com/tr', 'connect.facebook.net', 'facebook.net',
-                       '/fbevents.js', 'fbcdn.net']),
+                       '/fbevents.js', 'fbcdn.net'],
+                      'behavioral_tracking'),
         'tiktok':    ('TikTok Pixel', 'critical',
                       ['analytics.tiktok.com', 'business-api.tiktok.com',
-                       'tiktok.com/i18n/pixel', '/tiktok-pixel']),
+                       'tiktok.com/i18n/pixel', '/tiktok-pixel'],
+                      'behavioral_tracking'),
         'invoca':    ('Invoca Call Tracking', 'high',
-                      ['invoca.net', 'invocacdn.com']),
+                      ['invoca.net', 'invocacdn.com'],
+                      'call_tracking'),
         'microsoft': ('Microsoft/Bing Ads', 'medium',
-                      ['bat.bing.com', 'bing.com/api', 'clarity.ms', 'uetanalytics.com']),
+                      ['bat.bing.com', 'bing.com/api', 'uetanalytics.com'],
+                      'analytics'),
         'linkedin':  ('LinkedIn Insight Tag', 'medium',
-                      ['linkedin.com/px', 'snap.licdn.com', 'linkedin.com/li/track']),
+                      ['linkedin.com/px', 'snap.licdn.com', 'linkedin.com/li/track',
+                       'px.ads.linkedin.com', 'px4.ads.linkedin.com'],
+                      'behavioral_tracking'),
+
+        # ── Session replay vendors (legal client priority list) ───────────────
+        'clarity':   ('Microsoft Clarity', 'critical',
+                      ['clarity.ms', 'www.clarity.ms', 'e.clarity.ms', 'c.clarity.ms'],
+                      'session_replay'),
+        'fullstory': ('FullStory', 'critical',
+                      ['fullstory.com', 'rs.fullstory.com', 'edge.fullstory.com',
+                       'fs.com/s/fs.js'],
+                      'session_replay'),
+        'hubspot':   ('HubSpot', 'critical',
+                      ['js.hs-scripts.com', 'js.hsforms.net', 'forms.hubspot.com',
+                       'js.hs-analytics.net', 'api.hubspot.com', 'track.hubspot.com',
+                       'js.hubspot.com'],
+                      'session_replay'),
+        'pinterest': ('Pinterest Tag', 'high',
+                      ['ct.pinterest.com', 's.pinimg.com', 'pintrk',
+                       'pinterest.com/ct'],
+                      'behavioral_tracking'),
+        'mntn':      ('MNTN (Mountain)', 'high',
+                      ['mountain.com/t/', 'pixel.mountain.com', 'tracker.mountain.com',
+                       't.mountain.com', 'dx.mountain.com', 'px.mountain.com'],
+                      'ctv_attribution'),
+        'marketo':   ('Marketo / Adobe Munchkin', 'high',
+                      ['munchkin.marketo.net', 'marketo.net', 'marketo.com/index.php'],
+                      'behavioral_tracking'),
+        'datadog':   ('DataDog RUM / Session Replay', 'high',
+                      ['datadoghq.com', 'datadoghq-browser-agent.com',
+                       'browser-intake-datadoghq.com', 'rum.browser-intake-datadoghq.com',
+                       'session-replay.browser-intake-datadoghq.com'],
+                      'session_replay'),
+    }
+
+    # Vendor type used in UI and litigation extract
+    BEHAVIORAL_VENDOR_TYPES = {
+        'session_replay':      'Session Replay',
+        'behavioral_tracking': 'Behavioral Tracking',
+        'lead_capture':        'Lead Capture / Form Interception',
+        'call_tracking':       'Call Tracking / Form Interception',
+        'ctv_attribution':     'Connected TV Attribution',
+        'analytics_replay':    'Analytics / Session Replay',
+        'analytics':           'Analytics',
     }
 
     vendors = {
         key: {
-            'name': name,
-            'risk': risk,
+            'name':          name,
+            'risk':          risk,
+            'vendor_type':   vtype,
             'request_count': 0,
-            'post_count': 0,
-            'pii': [],          # extracted PII items (lightweight dicts only)
-            'all_requests': [], # summary rows for expandable UI list
+            'post_count':    0,
+            'pii':           [],  # extracted PII items (lightweight dicts only)
+            'all_requests':  [],  # summary rows for expandable UI list
         }
-        for key, (name, risk, _) in VENDOR_PATTERNS.items()
+        for key, (name, risk, _, vtype) in VENDOR_PATTERNS.items()
     }
 
     for entry in entries:
@@ -833,7 +891,7 @@ def detect_vendor_requests(entries):
 
         # Match vendor
         matched_key = None
-        for key, (_, _, patterns) in VENDOR_PATTERNS.items():
+        for key, (_, _, patterns, _vtype) in VENDOR_PATTERNS.items():
             if any(p in url_lower for p in patterns):
                 matched_key = key
                 break
@@ -1221,6 +1279,7 @@ def analyze_har_simple(har_data):
         vendors_with_pii[vendor_key] = {
             'name':          vendor_data['name'],
             'risk':          vendor_data['risk'],
+            'vendor_type':   vendor_data.get('vendor_type', 'analytics'),  # passed to frontend for session replay UI
             'request_count': vendor_data['request_count'],
             'post_count':    vendor_data['post_count'],
             'pii':           pii,
@@ -1443,6 +1502,58 @@ def build_litigation_extract(results, risk):
             lines.append(f"  Seen by: {', '.join(vendor_set)}")
         lines.append("")
 
+    # ── Session replay / behavioral vendors ─────────────────────────────────
+    REPLAY_TYPES = {'session_replay', 'behavioral_tracking', 'lead_capture',
+                    'call_tracking', 'analytics_replay', 'ctv_attribution'}
+    replay_vendors_found = {
+        vkey: vdata for vkey, vdata in vendors.items()
+        if vdata.get('vendor_type', '') in REPLAY_TYPES and vdata.get('request_count', 0) > 0
+    }
+    if replay_vendors_found:
+        lines.append("=" * 60)
+        lines.append("BEHAVIORAL RECORDING / SESSION REPLAY VENDORS")
+        lines.append("=" * 60)
+        REPLAY_LEGAL = {
+            'session_replay': (
+                "Session replay vendor detected. This vendor records keystrokes, mouse "
+                "movements, and form field input in real time before submission. "
+                "Constitutes interception under CIPA §631(a) regardless of whether "
+                "specific field values are visible in network payloads."
+            ),
+            'behavioral_tracking': (
+                "Behavioral tracking vendor detected. This vendor captures user "
+                "interaction signals including page events, clicks, and form activity. "
+                "Third-party acquisition of behavioral data during user session."
+            ),
+            'lead_capture': (
+                "Lead capture / form interception vendor detected. This vendor is "
+                "configured to intercept form field values in real time before "
+                "submission — a primary basis for CIPA §631(a) claims."
+            ),
+            'call_tracking': (
+                "Call tracking vendor with form interception capability detected. "
+                "Captures session identifiers and page context; may intercept "
+                "communication contents depending on configuration."
+            ),
+            'ctv_attribution': (
+                "Connected TV attribution vendor detected. This vendor places a "
+                "tracking pixel that collects page-level visitor attributes and "
+                "identity signals across 132M+ households for cross-device attribution."
+            ),
+            'analytics_replay': (
+                "Analytics platform with session replay capability detected. "
+                "This vendor may record user interactions and form field input "
+                "in addition to standard analytics collection."
+            ),
+        }
+        for vdata in replay_vendors_found.values():
+            vtype = vdata.get('vendor_type', 'behavioral_tracking')
+            lines.append(f"\nVendor: {vdata['name']} [{REPLAY_LEGAL.get(vtype, '').__class__.__name__}: {vtype}]")
+            lines.append(f"  Requests detected: {vdata['request_count']}")
+            lines.append(f"  PII confirmed in payloads: {vdata['pii_count']}")
+            lines.append(f"  Legal characterization: {REPLAY_LEGAL.get(vtype, 'Third-party behavioral data collection')}")
+        lines.append("")
+
     # ── Damages ───────────────────────────────────────────────────────────────
     lines.append("=" * 60)
     lines.append("DAMAGES ANALYSIS")
@@ -1622,6 +1733,13 @@ Produce all 7 sections in order:
 7. Damages Analysis (conservative / hybrid / aggressive, tabular with HAR IDs)
 
 Format output as clean Markdown with proper table syntax.
+
+CRITICAL RULE — COMPLETENESS:
+You MUST produce all 7 sections in full. Do not stop after section 5 or any earlier section.
+Do not summarize or abbreviate later sections. Every section must have substantive content
+derived from the provided data. If you are running long, reduce detail in earlier sections
+rather than omitting later ones. The Damages Analysis (section 7) is essential and must
+always be included.
 
 CRITICAL RULE — HASH VERIFICATION:
 The analysis data marks each hashed PII value as either:
@@ -2728,7 +2846,17 @@ def compute_risk_score(results):
                 seen_dmg.add(key)
                 total_damages += p.get('legal_context', {}).get('estimated_damages', 0)
 
+    SESSION_REPLAY_TYPES = {'session_replay', 'behavioral_tracking', 'lead_capture',
+                            'call_tracking', 'analytics_replay', 'ctv_attribution'}
     vendors_with_pii = [v for v in vendors.values() if v.get('pii_count', 0) > 0]
+    # Session replay / behavioral vendors count toward vendor risk even with 0 visible PII
+    replay_vendor_count = sum(
+        1 for v in vendors.values()
+        if v.get('vendor_type', '') in SESSION_REPLAY_TYPES and v.get('request_count', 0) > 0
+        and v.get('pii_count', 0) == 0  # only add if not already counted above
+    )
+    # Use the higher of PII-bearing vendors vs session replay vendors
+    effective_vendor_count = max(len(vendors_with_pii), len(vendors_with_pii) + replay_vendor_count)
     leadid_present   = results.get('leadid_detected', False)
     get_with_pii     = any(
         p.get('request_details', {}).get('method') == 'GET'
@@ -2739,7 +2867,7 @@ def compute_risk_score(results):
     # --- Sub-scores (0-100 each) ---
     n_plain  = len(plaintext_pii_items)
     n_hashed = len(hashed_pii_items)
-    n_vendor = len(vendors_with_pii)
+    n_vendor = effective_vendor_count
     n_aggrav = (1 if leadid_present else 0) + (1 if get_with_pii else 0)
 
     def _plain_sub(n):
@@ -3130,7 +3258,7 @@ def api_generate_report(analysis_id):
     try:
         response = _anthropic_client.messages.create(
             model=model,
-            max_tokens=12000,
+            max_tokens=16000,
             system=system_prompt,
             messages=[{'role': 'user', 'content': user_message}]
         )
@@ -3148,29 +3276,30 @@ def api_generate_report(analysis_id):
     # Convert Markdown to HTML
     html_content = markdown_to_html(markdown_output)
 
-    # Save report to MongoDB
-    report_id = str(uuid.uuid4())
+    # Save report METADATA only to MongoDB — no report content stored (legal requirement)
+    report_id  = str(uuid.uuid4())
+    generated_date = datetime.now(timezone.utc)
     try:
         _col_reports.insert_one({
             'report_id':      report_id,
             'analysis_id':    analysis_id,
-            'created_at':     datetime.now(timezone.utc),
+            'created_at':     generated_date,
             'model_used':     model,
             'prompt_version': prompt_version,
             'input_tokens':   input_tokens,
             'output_tokens':  output_tokens,
             'status':         'complete',
-            'markdown':       markdown_output,   # raw source for both formats
-            'html_content':   html_content,
+            # NOTE: report content (markdown/html) is NOT stored — legal requirement.
+            # Users must download the file at generation time.
         })
-        # Update the single_analyses doc to mark report exists
+        # Mark that a report was generated for this analysis (metadata only)
         _col_single.update_one(
             {'analysis_id': analysis_id},
             {'$set': {'has_report': True, 'report_id': report_id}}
         )
-        print(f"✅ Litigation report saved: {report_id}")
+        print(f"✅ Litigation report metadata saved: {report_id} (content not stored)")
     except Exception as e:
-        print(f"⚠️  Report save failed (non-fatal): {e}")
+        print(f"⚠️  Report metadata save failed (non-fatal): {e}")
 
     # Return docx as binary download, or JSON with html content
     if out_format == 'docx':
@@ -3181,11 +3310,13 @@ def api_generate_report(analysis_id):
                 docx_buf,
                 mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                 as_attachment=True,
-                download_name=f'litigation-package-{report_id[:8]}.docx',
+                download_name=f'litigation-package-{generated_date.strftime("%m%d%Y")}.docx',
             )
         except Exception as e:
             # Fall back to HTML if docx generation fails
             print(f'⚠️  docx generation failed, falling back to HTML: {e}')
+
+    date_str = generated_date.strftime('%m%d%Y')
 
     return jsonify({
         'report_id':     report_id,
@@ -3193,6 +3324,7 @@ def api_generate_report(analysis_id):
         'model_used':    model,
         'input_tokens':  input_tokens,
         'output_tokens': output_tokens,
+        'date_str':      date_str,   # used for filename e.g. 06252026
         'html':          html_content,
     })
 
@@ -3212,13 +3344,13 @@ def api_reports_count():
 @app.route('/api/reports/<report_id>', methods=['GET'])
 def api_get_report(report_id):
     """
-    Retrieve a previously generated litigation report by report_id.
-    Returns the stored HTML content for re-download.
+    Return report metadata only — content is not stored (legal requirement).
     """
     if not MONGO_ENABLED:
         return jsonify({'error': 'Database not available'}), 503
     try:
-        doc = _col_reports.find_one({'report_id': report_id}, {'_id': 0})
+        doc = _col_reports.find_one({'report_id': report_id},
+                                    {'_id': 0, 'markdown': 0, 'html_content': 0})
         if not doc:
             return jsonify({'error': 'Report not found'}), 404
         if 'created_at' in doc:
@@ -3231,28 +3363,13 @@ def api_get_report(report_id):
 @app.route('/api/reports/<report_id>/docx', methods=['GET'])
 def api_get_report_docx(report_id):
     """
-    Re-download a previously generated report as a .docx file.
-    Converts the stored raw markdown to docx on the fly.
+    Re-download is not available — report content is not stored (legal requirement).
+    Users must download the file at generation time.
     """
-    if not MONGO_ENABLED:
-        return jsonify({'error': 'Database not available'}), 503
-    try:
-        from flask import send_file
-        doc = _col_reports.find_one({'report_id': report_id}, {'_id': 0, 'markdown': 1})
-        if not doc:
-            return jsonify({'error': 'Report not found'}), 404
-        md = doc.get('markdown', '')
-        if not md:
-            return jsonify({'error': 'No markdown source stored — regenerate the report'}), 400
-        docx_buf = markdown_to_docx(md)
-        return send_file(
-            docx_buf,
-            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            as_attachment=True,
-            download_name=f'litigation-package-{report_id[:8]}.docx',
-        )
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return jsonify({
+        'error': 'Re-download is not available. Report content is not stored. '
+                 'Please regenerate the report to download again.'
+    }), 410
 
 
 @app.route('/api/admin/usage/summary', methods=['GET'])

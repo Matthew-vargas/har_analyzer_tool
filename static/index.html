@@ -800,6 +800,91 @@
         }
 
 
+        /* ── Vendor Section Headers ─────────────────────────────────────── */
+        .vendor-section-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 20px 0 10px;
+            font-size: 0.78em;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+        .vendor-section-header::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: currentColor;
+            opacity: 0.2;
+        }
+        .vendor-section-header.replay-section  { color: #7a5800; }
+        .vendor-section-header.tracking-section { color: #8892b0; }
+
+        /* ── Session Replay Alert ───────────────────────────────────── */
+        .replay-alert {
+            background: #1e1a0e;
+            border: 2px solid rgba(212,184,74,0.5);
+            border-left: 4px solid #d4b84a;
+            border-radius: 10px;
+            padding: 16px 20px;
+            margin-bottom: 18px;
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+        }
+
+        .replay-alert-icon { font-size: 1.6em; flex-shrink: 0; margin-top: 2px; }
+
+        .replay-alert-body { flex: 1; }
+
+        .replay-alert-title {
+            font-weight: 700;
+            color: #e8d070;
+            font-size: 0.98em;
+            margin-bottom: 6px;
+        }
+
+        .replay-alert-desc {
+            font-size: 0.85em;
+            color: #c8d0e8;
+            line-height: 1.55;
+            margin-bottom: 8px;
+        }
+
+        .replay-vendor-pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .replay-vendor-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.78em;
+            font-weight: 600;
+            background: rgba(212,184,74,0.15);
+            border: 1px solid rgba(212,184,74,0.4);
+            color: #e8d070;
+        }
+
+        .vendor-replay-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 10px;
+            border-radius: 5px;
+            font-size: 0.78em;
+            font-weight: 700;
+            letter-spacing: 0.03em;
+            border: 1px solid rgba(180,140,0,0.5);
+            background: rgba(212,184,74,0.18);
+            color: #5a3e00;
+        }
+
         /* ── Generate Litigation Package Panel ──────────────────── */
         .generate-panel {
             background: #181c27;
@@ -1127,6 +1212,44 @@
                 html += '<div class="alert-box critical">';
                 html += `🚨 ${data.vendors_detected} Third-Party Vendor${data.vendors_detected > 1 ? 's' : ''} Detected`;
                 html += '</div>';
+
+                // ── Session replay / behavioral recording alert ──────────────
+                const REPLAY_TYPES = ['session_replay','behavioral_tracking','lead_capture',
+                                      'call_tracking','analytics_replay','ctv_attribution'];
+                const REPLAY_LABELS = {
+                    'session_replay':      '🎥 Session Replay',
+                    'behavioral_tracking': '👁 Behavioral Tracking',
+                    'lead_capture':        '⚠️ Form Interception',
+                    'call_tracking':       '📞 Call Tracking',
+                    'ctv_attribution':     '📺 CTV Attribution',
+                    'analytics_replay':    '🎥 Analytics + Replay',
+                };
+                const replayVendors = Object.entries(data.vendors || {})
+                    .filter(([k, v]) => REPLAY_TYPES.includes(v.vendor_type) && v.request_count > 0)
+                    .map(([k, v]) => ({ name: v.name, type: v.vendor_type, count: v.request_count }));
+
+                if (replayVendors.length > 0) {
+                    const isSessionReplay = replayVendors.some(v => v.type === 'session_replay');
+                    html += '<div class="replay-alert">';
+                    html += '<div class="replay-alert-icon">' + (isSessionReplay ? '🎥' : '👁') + '</div>';
+                    html += '<div class="replay-alert-body">';
+                    html += '<div class="replay-alert-title">' +
+                        (isSessionReplay
+                            ? 'Session Replay Active — User Interactions May Have Been Recorded'
+                            : 'Behavioral Tracking Vendors Detected') +
+                        '</div>';
+                    html += '<div class="replay-alert-desc">' +
+                        (isSessionReplay
+                            ? 'One or more vendors with session replay capability were detected in this session. These tools record keystrokes, mouse movements, clicks, and form field input in real time — constituting interception under CIPA §631(a) regardless of whether specific values are visible in network payloads.'
+                            : 'Vendors capable of real-time behavioral data collection were detected. These tools capture user interaction signals during the session.') +
+                        '</div>';
+                    html += '<div class="replay-vendor-pills">';
+                    replayVendors.forEach(v => {
+                        const label = REPLAY_LABELS[v.type] || '⚠️ Tracking';
+                        html += `<span class="replay-vendor-pill">${label}: ${v.name} (${v.count} req)</span>`;
+                    });
+                    html += '</div></div></div>';
+                }
                 
                 html += '<div class="stats">';
                 html += `<div class="stat">`;
@@ -1211,9 +1334,24 @@
                         html += '</div>';
 
                         html += '<div class="pii-data">';
-                        group.items.forEach(p => {
-                            html += `<div class="pii-item-type">📋 ${escapeHtml(p.type)}: ${escapeHtml(p.value)}</div>`;
+                        // Deduplicate items within each group
+                        const seenItems = new Set();
+                        const dedupedItems = group.items.filter(p => {
+                            const k = (p.type + ':' + p.value).toLowerCase();
+                            // Also filter generic noise values like "leadgen flow", "true", "false"
+                            const noiseValues = ['leadgen flow', 'leadgen', 'true', 'false', 'null', 'undefined', ''];
+                            if (noiseValues.includes((p.value || '').toLowerCase())) return false;
+                            if (seenItems.has(k)) return false;
+                            seenItems.add(k);
+                            return true;
                         });
+                        if (dedupedItems.length === 0) {
+                            html += '<div class="pii-item-type" style="color:#888;font-style:italic;">No personally identifiable values in this submission</div>';
+                        } else {
+                            dedupedItems.forEach(p => {
+                                html += `<div class="pii-item-type">📋 ${escapeHtml(p.type)}: ${escapeHtml(p.value)}</div>`;
+                            });
+                        }
                         html += '</div>';
 
                         html += '<div class="legal-summary" style="border-left-color:#28a745;">';
@@ -1260,19 +1398,56 @@
             if (data.vendors_detected > 0) {
                 html += '<div class="timeline-card">';
                 html += '<h3>Detected Vendors</h3>';
-                
-                // Sort vendors by risk level
-                const vendorEntries = Object.entries(data.vendors);
+
+                // Split vendors into session replay / behavioral vs standard tracking
+                const REPLAY_VENDOR_TYPES = ['session_replay', 'analytics_replay',
+                    'behavioral_tracking', 'lead_capture', 'call_tracking', 'ctv_attribution'];
                 const riskOrder = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3};
-                vendorEntries.sort((a, b) => riskOrder[a[1].risk] - riskOrder[b[1].risk]);
-                
-                vendorEntries.forEach(([key, vendor]) => {
+
+                const allVendorEntries = Object.entries(data.vendors);
+                const replayVendorEntries  = allVendorEntries
+                    .filter(([k, v]) => REPLAY_VENDOR_TYPES.includes(v.vendor_type))
+                    .sort((a, b) => riskOrder[a[1].risk] - riskOrder[b[1].risk]);
+                const standardVendorEntries = allVendorEntries
+                    .filter(([k, v]) => !REPLAY_VENDOR_TYPES.includes(v.vendor_type))
+                    .sort((a, b) => riskOrder[a[1].risk] - riskOrder[b[1].risk]);
+
+                // ── Section 1: Session Replay & Behavioral Recording ─────────
+                if (replayVendorEntries.length > 0) {
+                    html += '<div class="vendor-section-header replay-section">🎥 Session Replay & Behavioral Recording</div>';
+                }
+                const vendorEntries = [...replayVendorEntries, ...standardVendorEntries];
+
+                // Track when we switch to standard section
+                let standardSectionStarted = false;
+
+                vendorEntries.forEach(([key, vendor], index) => {
+                    // Insert standard tracking header when we cross the boundary
+                    if (!standardSectionStarted && !REPLAY_VENDOR_TYPES.includes(vendor.vendor_type)) {
+                        standardSectionStarted = true;
+                        if (replayVendorEntries.length > 0) {
+                            html += '<div class="vendor-section-header tracking-section">📊 Standard Analytics & Advertising</div>';
+                        }
+                    }
                     const riskClass = vendor.risk;
                     const riskEmoji = vendor.risk === 'critical' ? '🔴' : vendor.risk === 'high' ? '🟠' : '🟡';
                     
                     html += '<div class="vendor-entry">';
+                    const replayBadgeTypes = {
+                        'session_replay':      '🎥 SESSION REPLAY',
+                        'analytics_replay':    '🎥 SESSION REPLAY',
+                        'behavioral_tracking': '👁 BEHAVIORAL TRACKING',
+                        'lead_capture':        '⚠️ FORM INTERCEPTION',
+                        'call_tracking':       '📞 CALL TRACKING',
+                        'ctv_attribution':     '📺 CTV ATTRIBUTION',
+                    };
+                    const replayBadge = replayBadgeTypes[vendor.vendor_type] || null;
+
                     html += `<div class="vendor-header ${riskClass}">`;
                     html += `${riskEmoji} <strong>${vendor.name}</strong>`;
+                    if (replayBadge) {
+                        html += `<span class="vendor-replay-badge">${replayBadge}</span>`;
+                    }
                     html += `<span class="vendor-count">${vendor.request_count} request${vendor.request_count > 1 ? 's' : ''}</span>`;
                     html += '</div>';
                     html += '<div class="vendor-details">';
@@ -1430,7 +1605,25 @@
                         
                     } else {
                         html += `<div class="vendor-stat">POST requests: ${vendor.post_count}</div>`;
-                        html += `<div class="vendor-stat">No PII detected in visible requests</div>`;
+
+                        // Session replay / behavioral vendors — legal callout even with 0 PII
+                        const replayTypes2 = ['session_replay','behavioral_tracking','lead_capture',
+                                              'call_tracking','analytics_replay','ctv_attribution'];
+                        if (replayTypes2.includes(vendor.vendor_type)) {
+                            const replayDesc = {
+                                'session_replay':      'Records keystrokes, mouse movements, clicks, and form field input in real time. Payload is encoded — recording activity is confirmed by vendor endpoint presence.',
+                                'analytics_replay':    'Analytics platform with session replay capability. May record user interactions and form field input alongside standard analytics.',
+                                'behavioral_tracking': 'Captures behavioral signals including clicks, page events, and form activity. Third-party acquisition of interaction data during user session.',
+                                'lead_capture':        'Configured to intercept and capture form field values in real time before submission. Primary basis for CIPA §631(a) interception claims.',
+                                'call_tracking':       'Captures session identifiers, page context, and may intercept form communication contents depending on site configuration.',
+                                'ctv_attribution':     'Places a tracking pixel that collects visitor identity attributes across 132M+ households for cross-device CTV attribution.',
+                            };
+                            const desc = replayDesc[vendor.vendor_type] || 'Behavioral data collection active.';
+                            html += `<div class="vendor-stat" style="color:#b0bbd4;font-size:0.85em;margin-top:4px;">No PII visible in network payloads</div>`;
+                            html += `<div class="vendor-stat" style="color:#5a3e00;font-size:0.85em;margin-top:6px;padding:8px 10px;background:rgba(212,184,74,0.1);border-radius:6px;border-left:3px solid rgba(212,184,74,0.5);">⚖️ <strong>Legal note:</strong> ${desc}</div>`;
+                        } else {
+                            html += `<div class="vendor-stat">No PII detected in visible requests</div>`;
+                        }
                         
                         // Still show "View All Requests" even without PII
                         if (vendor.all_requests && vendor.all_requests.length > 0) {
@@ -1571,6 +1764,7 @@
 <title>HAR Analysis — ${domain}</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: #ffffff;
@@ -1579,40 +1773,207 @@
     padding: 32px;
     max-width: 1000px;
     margin: 0 auto;
+    font-size: 15px;
   }
+
+  /* ── Header ── */
   .report-header {
     border-bottom: 2px solid #e0e0e0;
     padding-bottom: 16px;
-    margin-bottom: 24px;
+    margin-bottom: 28px;
   }
-  .report-header h1 { font-size: 1.4em; color: #1a1a2e; }
-  .report-header p  { font-size: 0.88em; color: #555; margin-top: 4px; }
-  /* Remap dark theme card styles to light */
+  .report-header h1 { font-size: 1.5em; color: #1a1a2e; margin-bottom: 4px; }
+  .report-header p  { font-size: 0.88em; color: #666; }
+
+  /* ── Cards ── */
   .timeline-card, .summary-card {
     background: #f8f9fc;
     border: 1px solid #e0e0e0;
     border-radius: 10px;
-    padding: 24px;
-    margin-bottom: 20px;
+    padding: 22px 26px;
+    margin-bottom: 18px;
   }
-  .timeline-card h3, .summary-card h3 { color: #1a1a2e; margin-bottom: 12px; }
-  .pii-item {
-    background: #fff3e0;
-    border: 1px solid #ffcc80;
-    border-radius: 6px;
-    padding: 10px 14px;
+  .timeline-card h3, .summary-card h3 {
+    color: #1a1a2e;
+    font-size: 1.05em;
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e0e0e0;
+  }
+
+  /* ── Alert boxes ── */
+  .alert-box {
+    padding: 10px 16px;
+    border-radius: 7px;
+    font-weight: 700;
+    margin-bottom: 14px;
+    font-size: 0.95em;
+  }
+  .alert-box.critical { background: #fdecea; color: #b71c1c; border: 1px solid #f5c6c6; }
+  .alert-box.high     { background: #fff8e1; color: #7a5800; border: 1px solid #ffe082; }
+  .alert-box.warning  { background: #fff8e1; color: #7a5800; border: 1px solid #ffe082; }
+
+  /* ── Session replay alert ── */
+  .replay-alert {
+    background: #fffde7;
+    border: 2px solid #f9a825;
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 18px;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+  }
+  .replay-alert-icon { font-size: 1.5em; flex-shrink: 0; }
+  .replay-alert-body { flex: 1; }
+  .replay-alert-title {
+    font-weight: 700;
+    color: #4a3000;
+    font-size: 0.98em;
+    margin-bottom: 6px;
+  }
+  .replay-alert-desc {
+    font-size: 0.85em;
+    color: #5a4000;
+    line-height: 1.55;
     margin-bottom: 8px;
   }
-  .vendor-header { font-weight: 700; font-size: 1.05em; margin-bottom: 8px; }
-  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.88em; }
-  th { background: #f0f0f0; padding: 8px 10px; border: 1px solid #ccc; text-align: left; }
-  td { padding: 7px 10px; border: 1px solid #ddd; }
-  .score-badge { display:inline-block; padding:3px 10px; border-radius:4px;
-                 font-weight:700; font-size:0.85em; margin-right:8px; }
-  .actions { display: none !important; }
+  .replay-vendor-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+  .replay-vendor-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.78em;
+    font-weight: 700;
+    background: #fff3cd;
+    border: 1px solid #f9a825;
+    color: #4a3000;
+  }
+
+  /* ── Vendor section headers ── */
+  .vendor-section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 22px 0 10px;
+    font-size: 0.75em;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .vendor-section-header::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: currentColor;
+    opacity: 0.25;
+  }
+  .vendor-section-header.replay-section  { color: #7a5800; }
+  .vendor-section-header.tracking-section { color: #888; }
+
+  /* ── Vendor cards ── */
+  .vendor-entry {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 16px 18px;
+    margin-bottom: 12px;
+  }
+  .vendor-header {
+    font-weight: 700;
+    font-size: 1em;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .vendor-header.critical { color: #b71c1c; }
+  .vendor-header.high     { color: #7a5800; }
+  .vendor-header.medium   { color: #1a5276; }
+  .vendor-count {
+    margin-left: auto;
+    font-size: 0.8em;
+    font-weight: 500;
+    color: #777;
+  }
+  .vendor-replay-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.72em;
+    font-weight: 700;
+    background: #fff3cd;
+    border: 1px solid #f9a825;
+    color: #4a3000;
+  }
+  .vendor-details { font-size: 0.88em; color: #444; }
+  .vendor-stat    { margin-bottom: 4px; }
+
+  /* ── PII items ── */
+  .pii-found  { color: #b71c1c; font-weight: 600; margin-bottom: 8px; }
+  .pii-violation-card {
+    background: #fff8f8;
+    border: 1px solid #f5c6c6;
+    border-left: 3px solid #e53935;
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    font-size: 0.88em;
+  }
+  .pii-violation-header { font-weight: 700; color: #b71c1c; margin-bottom: 6px; }
+  .request-details { margin-bottom: 6px; }
+  .request-method  { font-family: monospace; font-size: 0.9em; margin-bottom: 3px; }
+  .method-post     { color: #c0392b; }
+  .method-get      { color: #1a5276; }
+  .request-meta    { color: #777; font-size: 0.85em; margin-bottom: 6px; }
+  .pii-data        { margin-top: 6px; }
+  .pii-item-type   { padding: 3px 0; font-size: 0.9em; }
+
+  /* ── Stats ── */
+  .stats { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+  .stat  { text-align: center; }
+  .stat-number { font-size: 1.6em; font-weight: 700; color: #1a1a2e; display: block; }
+  .stat-label  { font-size: 0.78em; color: #777; }
+
+  /* ── Score badges ── */
+  .score-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 5px;
+    font-weight: 700;
+    font-size: 0.88em;
+  }
+  .score-critical { background: #fdecea; color: #b71c1c; border: 1px solid #f5c6c6; }
+  .score-high     { background: #fff8e1; color: #7a5800; border: 1px solid #ffe082; }
+  .score-elevated { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+  .score-lower    { background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; }
+
+  /* ── Legal note ── */
+  .legal-note {
+    background: #fffde7;
+    border-left: 3px solid #f9a825;
+    padding: 8px 12px;
+    font-size: 0.85em;
+    color: #4a3000;
+    border-radius: 0 4px 4px 0;
+    margin-top: 8px;
+  }
+
+  /* Expand all collapsed sections — no interactivity in downloaded file */
+  .expandable-section { display: block !important; }
+
+  /* Hide interactive elements ── */
+  .actions, .expandable-toggle, #generatePanel,
+  button, .btn, .copy-btn { display: none !important; }
+
   @media print {
-    body { padding: 16px; }
-    .actions { display: none !important; }
+    body { padding: 16px; font-size: 13px; }
+    .vendor-entry { page-break-inside: avoid; }
   }
 </style>
 </head>
@@ -1821,11 +2182,17 @@ ${bodyHtml}
 
                 if (fmt === 'docx') {
                     // docx comes back as binary — use blob directly from response
-                    const blob = await res.blob();
-                    const url  = URL.createObjectURL(blob);
-                    const a    = document.createElement('a');
-                    a.href     = url;
-                    a.download = `litigation-package-${_generateAnalysisId.slice(0,8)}.docx`;
+                    // date_str not available here (no JSON), build from current date
+                    const now      = new Date();
+                    const mm       = String(now.getMonth()+1).padStart(2,'0');
+                    const dd       = String(now.getDate()).padStart(2,'0');
+                    const yyyy     = now.getFullYear();
+                    const dateStr2 = `${mm}${dd}${yyyy}`;
+                    const blob     = await res.blob();
+                    const url      = URL.createObjectURL(blob);
+                    const a        = document.createElement('a');
+                    a.href         = url;
+                    a.download     = `litigation-package-${dateStr2}.docx`;
                     a.click();
                     URL.revokeObjectURL(url);
                     status.textContent = '✅ Word document downloaded';
@@ -1833,11 +2200,12 @@ ${bodyHtml}
                 } else {
                     // html — JSON response with html string
                     const data = await res.json();
-                    const blob = new Blob([data.html], { type: 'text/html' });
-                    const url  = URL.createObjectURL(blob);
-                    const a    = document.createElement('a');
-                    a.href     = url;
-                    a.download = `litigation-package-${_generateAnalysisId.slice(0,8)}.html`;
+                    const blob     = new Blob([data.html], { type: 'text/html' });
+                    const url      = URL.createObjectURL(blob);
+                    const a        = document.createElement('a');
+                    const dateStr  = data.date_str || new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}).replace(/\//g,'');
+                    a.href         = url;
+                    a.download     = `litigation-package-${dateStr}.html`;
                     a.click();
                     URL.revokeObjectURL(url);
                     status.textContent = `✅ Report generated — ${data.input_tokens.toLocaleString()} input + ${data.output_tokens.toLocaleString()} output tokens`;
