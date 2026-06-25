@@ -31,7 +31,10 @@ try:
         _col_single    = _db['single_analyses']
         _col_bulk      = _db['bulk_rankings']
         _col_settings  = _db['admin_settings']      # single upserted doc
-        _col_token_use = _db['token_usage']          # single upserted doc
+        _col_token_use  = _db['token_usage']          # single upserted doc (running totals)
+        _col_token_calls = _db['token_calls']          # per-call records for 30-day breakdown
+        _col_token_calls.create_index('timestamp', expireAfterSeconds=7776000)  # 90-day TTL
+        _col_token_calls.create_index([('timestamp', DESCENDING)])
         _col_reports   = _db['litigation_reports']   # Phase 3
 
         # TTL index: auto-expire documents after 90 days
@@ -2189,6 +2192,192 @@ def inline(text):
     return text
 
 
+def inline_plain(text):
+    """Strip markdown formatting to plain text (for docx runs)."""
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.+?)\*',     r'\1', text)
+    text = re.sub(r'`(.+?)`',        r'\1', text)
+    return text
+
+
+def markdown_to_docx(md):
+    """
+    Convert Markdown litigation package to a styled .docx file.
+    Returns a BytesIO object ready to serve as a file download.
+
+    Handles:
+      - H1/H2/H3 → Word heading styles
+      - Tables    → Word tables with header row shading
+      - Bold/italic inline formatting
+      - Horizontal rules → paragraph spacing
+      - Numbered lists → ListNumber style
+      - Warning blocks (## ⚠️) → highlighted paragraph
+    """
+    try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor, Inches, Cm
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+        import io, copy
+    except ImportError:
+        raise ImportError('python-docx is not installed — run: pip install python-docx==1.1.2')
+
+    doc = Document()
+
+    # ── Page margins ─────────────────────────────────────────────────────────
+    for section in doc.sections:
+        section.top_margin    = Cm(2.0)
+        section.bottom_margin = Cm(2.0)
+        section.left_margin   = Cm(2.5)
+        section.right_margin  = Cm(2.5)
+
+    # ── Heading styles ────────────────────────────────────────────────────────
+    def set_heading_style(para, level):
+        style_name = f'Heading {level}'
+        try:
+            para.style = doc.styles[style_name]
+        except KeyError:
+            para.style = doc.styles['Normal']
+        run = para.runs[0] if para.runs else para.add_run()
+        if level == 1:
+            run.font.size  = Pt(16)
+            run.font.bold  = True
+            run.font.color.rgb = RGBColor(0x22, 0x22, 0x22)
+        elif level == 2:
+            run.font.size  = Pt(13)
+            run.font.bold  = True
+            run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+        elif level == 3:
+            run.font.size  = Pt(11)
+            run.font.bold  = True
+            run.font.color.rgb = RGBColor(0x44, 0x44, 0x44)
+
+    # ── Add paragraph with inline formatting ──────────────────────────────────
+    def add_formatted_para(text, style='Normal', bold_all=False):
+        para  = doc.add_paragraph(style=style)
+        parts = re.split(r'(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)', text)
+        for part in parts:
+            if part.startswith('**') and part.endswith('**'):
+                run = para.add_run(part[2:-2])
+                run.bold = True
+            elif part.startswith('*') and part.endswith('*'):
+                run = para.add_run(part[1:-1])
+                run.italic = True
+            elif part.startswith('`') and part.endswith('`'):
+                run = para.add_run(part[1:-1])
+                run.font.name = 'Courier New'
+                run.font.size = Pt(9)
+            else:
+                run = para.add_run(part)
+            if bold_all:
+                run.bold = True
+        return para
+
+    # ── Add table ─────────────────────────────────────────────────────────────
+    def add_table(header_cells, rows):
+        col_count = len(header_cells)
+        if col_count == 0:
+            return
+        tbl = doc.add_table(rows=1 + len(rows), cols=col_count)
+        tbl.style = 'Table Grid'
+
+        # Header row
+        hdr_row = tbl.rows[0]
+        for i, cell_text in enumerate(header_cells):
+            cell = hdr_row.cells[i]
+            cell.text = inline_plain(cell_text)
+            # Bold header text
+            for run in cell.paragraphs[0].runs:
+                run.bold = True
+            # Light grey shading
+            tc_pr = cell._tc.get_or_add_tcPr()
+            shd   = OxmlElement('w:shd')
+            shd.set(qn('w:val'),   'clear')
+            shd.set(qn('w:color'), 'auto')
+            shd.set(qn('w:fill'),  'E8E8E8')
+            tc_pr.append(shd)
+
+        # Data rows
+        for r_idx, row_cells in enumerate(rows):
+            row = tbl.rows[r_idx + 1]
+            for c_idx, cell_text in enumerate(row_cells):
+                if c_idx < col_count:
+                    row.cells[c_idx].text = inline_plain(cell_text)
+
+        doc.add_paragraph()  # spacing after table
+
+    # ── Parse markdown line by line ───────────────────────────────────────────
+    lines   = md.split('\n')
+    i       = 0
+    in_list = False
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Markdown table
+        if line.startswith('|'):
+            table_lines = []
+            while i < len(lines) and lines[i].startswith('|'):
+                table_lines.append(lines[i])
+                i += 1
+            if table_lines:
+                rows_raw = []
+                header   = None
+                for tl in table_lines:
+                    cells = [c.strip() for c in tl.split('|')[1:-1]]
+                    if all(re.match(r'^-+$', c.replace(':', '').strip()) for c in cells if c):
+                        continue  # skip separator
+                    if header is None:
+                        header = cells
+                    else:
+                        rows_raw.append(cells)
+                if header:
+                    add_table(header, rows_raw)
+            continue
+
+        # Warning block
+        if line.startswith('## ⚠️') or line.startswith('## ⚠'):
+            p = add_formatted_para(line[3:].strip(), 'Normal')
+            p.runs[0].font.color.rgb = RGBColor(0x99, 0x66, 0x00) if p.runs else None
+            i += 1; continue
+
+        # Headings
+        if line.startswith('# '):
+            p = doc.add_heading(inline_plain(line[2:]), level=1)
+            i += 1; continue
+        if line.startswith('## '):
+            p = doc.add_heading(inline_plain(line[3:]), level=2)
+            i += 1; continue
+        if line.startswith('### '):
+            p = doc.add_heading(inline_plain(line[4:]), level=3)
+            i += 1; continue
+
+        # Horizontal rule — add spacing
+        if line.strip() == '---':
+            doc.add_paragraph()
+            i += 1; continue
+
+        # Numbered list
+        if re.match(r'^\d+\.\s', line):
+            add_formatted_para(line[line.index('.')+2:], 'List Number')
+            i += 1; continue
+
+        # Blank line
+        if line.strip() == '':
+            i += 1; continue
+
+        # Regular paragraph
+        add_formatted_para(line)
+        i += 1
+
+    # Return as BytesIO
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf
+
+
 # ── History API endpoints ────────────────────────────────────────────────────
 
 @app.route('/api/history/single', methods=['GET'])
@@ -2886,9 +3075,12 @@ def api_generate_report(analysis_id):
     if not MONGO_ENABLED:
         return jsonify({'error': 'Database not available'}), 503
 
-    # Get model from request body (optional — falls back to admin default)
-    data  = request.get_json(silent=True) or {}
-    model = data.get('model') or get_admin_settings().get('default_model', DEFAULT_MODEL)
+    # Get model and format from request body
+    data        = request.get_json(silent=True) or {}
+    model       = data.get('model') or get_admin_settings().get('default_model', DEFAULT_MODEL)
+    out_format  = data.get('format', 'html').lower()  # 'html' or 'docx'
+    if out_format not in ('html', 'docx'):
+        out_format = 'html'
 
     # Load litigation extract from MongoDB
     doc = _col_single.find_one({'analysis_id': analysis_id}, {'_id': 0})
@@ -2947,7 +3139,7 @@ def api_generate_report(analysis_id):
         input_tokens    = response.usage.input_tokens
         output_tokens   = response.usage.output_tokens
 
-        track_token_usage(input_tokens, output_tokens)
+        track_token_usage(input_tokens, output_tokens, model=model)
 
     except Exception as e:
         print(f"⚠️  Claude API call failed: {e}")
@@ -2968,6 +3160,7 @@ def api_generate_report(analysis_id):
             'input_tokens':   input_tokens,
             'output_tokens':  output_tokens,
             'status':         'complete',
+            'markdown':       markdown_output,   # raw source for both formats
             'html_content':   html_content,
         })
         # Update the single_analyses doc to mark report exists
@@ -2978,6 +3171,21 @@ def api_generate_report(analysis_id):
         print(f"✅ Litigation report saved: {report_id}")
     except Exception as e:
         print(f"⚠️  Report save failed (non-fatal): {e}")
+
+    # Return docx as binary download, or JSON with html content
+    if out_format == 'docx':
+        try:
+            from flask import send_file
+            docx_buf = markdown_to_docx(markdown_output)
+            return send_file(
+                docx_buf,
+                mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                as_attachment=True,
+                download_name=f'litigation-package-{report_id[:8]}.docx',
+            )
+        except Exception as e:
+            # Fall back to HTML if docx generation fails
+            print(f'⚠️  docx generation failed, falling back to HTML: {e}')
 
     return jsonify({
         'report_id':     report_id,
@@ -3020,15 +3228,146 @@ def api_get_report(report_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/reports/<report_id>/docx', methods=['GET'])
+def api_get_report_docx(report_id):
+    """
+    Re-download a previously generated report as a .docx file.
+    Converts the stored raw markdown to docx on the fly.
+    """
+    if not MONGO_ENABLED:
+        return jsonify({'error': 'Database not available'}), 503
+    try:
+        from flask import send_file
+        doc = _col_reports.find_one({'report_id': report_id}, {'_id': 0, 'markdown': 1})
+        if not doc:
+            return jsonify({'error': 'Report not found'}), 404
+        md = doc.get('markdown', '')
+        if not md:
+            return jsonify({'error': 'No markdown source stored — regenerate the report'}), 400
+        docx_buf = markdown_to_docx(md)
+        return send_file(
+            docx_buf,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            as_attachment=True,
+            download_name=f'litigation-package-{report_id[:8]}.docx',
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/usage/summary', methods=['GET'])
+def api_admin_usage_summary():
+    """
+    Return token usage summary for the last 30 days and all time.
+    Groups by model and computes estimated cost using per-model rates.
+    """
+    # Per-model pricing ($ per million tokens)
+    MODEL_RATES = {
+        'claude-haiku-4-5-20251001': {'input': 1.00,  'output': 5.00},
+        'claude-haiku-4-5':          {'input': 1.00,  'output': 5.00},
+        'claude-sonnet-4-6':         {'input': 3.00,  'output': 15.00},
+        'claude-opus-4-6':           {'input': 5.00,  'output': 25.00},
+        'unknown':                   {'input': 3.00,  'output': 15.00},  # assume Sonnet if unknown
+    }
+
+    def compute_cost(model, inp, out):
+        rates = MODEL_RATES.get(model, MODEL_RATES['unknown'])
+        return (inp / 1_000_000 * rates['input']) + (out / 1_000_000 * rates['output'])
+
+    # All-time totals from running-total doc
+    all_time = get_token_usage()
+    all_time_inp  = all_time.get('total_input_tokens', 0)
+    all_time_out  = all_time.get('total_output_tokens', 0)
+    all_time_calls = all_time.get('total_calls', 0)
+
+    if not MONGO_ENABLED:
+        return jsonify({
+            'db_enabled':    False,
+            'all_time':      {'input': all_time_inp, 'output': all_time_out,
+                              'calls': all_time_calls, 'cost': 0},
+            'last_30_days':  {'input': 0, 'output': 0, 'calls': 0,
+                              'cost': 0, 'by_model': []},
+        })
+
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+
+        # Aggregate last-30-day calls grouped by model
+        pipeline = [
+            {'$match': {'timestamp': {'$gte': cutoff}}},
+            {'$group': {
+                '_id':          '$model',
+                'input_tokens': {'$sum': '$input_tokens'},
+                'output_tokens':{'$sum': '$output_tokens'},
+                'calls':        {'$sum': 1},
+            }},
+            {'$sort': {'input_tokens': -1}},
+        ]
+        rows = list(_col_token_calls.aggregate(pipeline))
+
+        by_model = []
+        total_30_inp = total_30_out = total_30_calls = 0
+        total_30_cost = 0.0
+
+        for row in rows:
+            model  = row['_id'] or 'unknown'
+            inp    = row['input_tokens']
+            out    = row['output_tokens']
+            calls  = row['calls']
+            cost   = compute_cost(model, inp, out)
+            total_30_inp   += inp
+            total_30_out   += out
+            total_30_calls += calls
+            total_30_cost  += cost
+            by_model.append({
+                'model':         model,
+                'input_tokens':  inp,
+                'output_tokens': out,
+                'calls':         calls,
+                'cost':          round(cost, 4),
+            })
+
+        # All-time estimated cost (best-effort using same rates)
+        # Since we don't have per-model breakdown all-time, use 30-day mix
+        # or fall back to Sonnet rate for unknown distribution
+        all_time_cost = round(compute_cost('unknown', all_time_inp, all_time_out), 4)
+
+        return jsonify({
+            'db_enabled':   True,
+            'all_time': {
+                'input':  all_time_inp,
+                'output': all_time_out,
+                'calls':  all_time_calls,
+                'cost':   all_time_cost,
+            },
+            'last_30_days': {
+                'input':    total_30_inp,
+                'output':   total_30_out,
+                'calls':    total_30_calls,
+                'cost':     round(total_30_cost, 4),
+                'by_model': by_model,
+            },
+        })
+    except Exception as e:
+        print(f'⚠️  Usage summary failed: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
 # ── Claude / Anthropic helpers ───────────────────────────────────────────────
 
-def track_token_usage(input_tokens, output_tokens):
+def track_token_usage(input_tokens, output_tokens, model=None):
     """
-    Accumulate token usage in MongoDB. Non-fatal if DB unavailable.
+    Accumulate token usage in MongoDB.
+    Writes to two collections:
+      - token_usage: single running-total doc (all-time)
+      - token_calls: one doc per API call with timestamp + model (for 30-day breakdown)
+    Non-fatal if DB unavailable.
     """
     if not MONGO_ENABLED:
         return
+    now = datetime.now(timezone.utc)
     try:
+        # Running totals
         _col_token_use.update_one(
             {'_id': 'global'},
             {
@@ -3037,10 +3376,17 @@ def track_token_usage(input_tokens, output_tokens):
                     'total_output_tokens': output_tokens,
                     'total_calls':         1,
                 },
-                '$set': {'last_updated': datetime.now(timezone.utc)},
+                '$set': {'last_updated': now},
             },
             upsert=True
         )
+        # Per-call record
+        _col_token_calls.insert_one({
+            'timestamp':     now,
+            'model':         model or 'unknown',
+            'input_tokens':  input_tokens,
+            'output_tokens': output_tokens,
+        })
     except Exception as e:
         print(f'⚠️  Token tracking failed: {e}')
 
@@ -3095,7 +3441,7 @@ def api_claude_status():
         input_tokens  = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
 
-        track_token_usage(input_tokens, output_tokens)
+        track_token_usage(input_tokens, output_tokens, model='claude-haiku-4-5-20251001')
 
         return jsonify({
             'connected':    True,

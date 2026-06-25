@@ -744,8 +744,7 @@
             align-items: center;
             justify-content: space-between;
             padding: 12px 24px;
-            background: rgba(255,255,255,0.12);
-            backdrop-filter: blur(8px);
+            background: #1a1040;
             border-bottom: 1px solid rgba(255,255,255,0.15);
             position: sticky;
             top: 0;
@@ -815,7 +814,7 @@
         .generate-panel-title {
             font-size: 1em;
             font-weight: 700;
-            color: #e2e6f3;
+            color: #ffffff;
             margin-bottom: 6px;
             display: flex;
             align-items: center;
@@ -824,7 +823,7 @@
 
         .generate-panel-subtitle {
             font-size: 0.83em;
-            color: #8892b0;
+            color: #c8d0e8;
             margin-bottom: 20px;
         }
 
@@ -838,7 +837,7 @@
 
         .generate-model-label {
             font-size: 0.83em;
-            color: #8892b0;
+            color: #c8d0e8;
             white-space: nowrap;
         }
 
@@ -856,7 +855,7 @@
         .generate-cost-est {
             font-family: 'IBM Plex Mono', monospace;
             font-size: 0.78em;
-            color: #4a5578;
+            color: #8892b0;
         }
 
         .generate-btn {
@@ -880,21 +879,54 @@
 
         .generate-warning {
             font-size: 0.78em;
-            color: #d4b84a;
+            color: #e6c84a;
             margin-top: 4px;
         }
 
         .generate-status {
             font-size: 0.85em;
-            color: #8892b0;
+            color: #c8d0e8;
             margin-top: 10px;
             min-height: 20px;
         }
 
         .generate-not-configured {
             font-size: 0.85em;
-            color: #8892b0;
+            color: #c8d0e8;
             padding: 8px 0;
+        }
+
+        /* Format pill toggle */
+        .format-toggle {
+            display: flex;
+            background: #0f1117;
+            border: 1px solid #2a3050;
+            border-radius: 7px;
+            padding: 3px;
+            gap: 2px;
+        }
+
+        .format-toggle input[type="radio"] { display: none; }
+
+        .format-toggle label {
+            padding: 5px 16px;
+            border-radius: 5px;
+            font-size: 0.85em;
+            font-weight: 500;
+            color: #b0bbd4;
+            cursor: pointer;
+            transition: all 0.15s;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        .format-toggle input[type="radio"]:checked + label {
+            background: #7c6ff7;
+            color: #ffffff;
+        }
+
+        .format-toggle label:hover {
+            color: #c8d0e8;
         }
 
     </style>
@@ -928,12 +960,12 @@
         ">
             <div style="display:flex; align-items:center; gap:10px;">
                 <span id="claudeStatusDot" style="font-size:1em;">⚪</span>
-                <span id="claudeStatusText" style="color:#8892b0;">Checking Claude API...</span>
+                <span id="claudeStatusText" style="color:#c8d0e8;">Checking Claude API...</span>
             </div>
             <div style="display:flex; align-items:center; gap:16px;">
-                <span id="claudeTokenCount" style="font-family:'IBM Plex Mono',monospace; font-size:0.82em; color:#4a5578;"></span>
+                <span id="claudeTokenCount" style="font-family:'IBM Plex Mono',monospace; font-size:0.82em; color:#8892b0;"></span>
                 <button onclick="testClaudeConnection()" style="
-                    background:none; border:1px solid #2a3050; color:#8892b0;
+                    background:none; border:1px solid #2a3050; color:#b0bbd4;
                     padding:4px 12px; border-radius:5px; cursor:pointer;
                     font-size:0.82em; transition:all 0.15s;
                 " onmouseover="this.style.borderColor='#7c6ff7';this.style.color='#7c6ff7'"
@@ -1451,6 +1483,7 @@
             html += '<div class="summary-card">';
             html += '<div class="actions">';
             html += '<button onclick="copyTimeline()">📋 Copy Data</button>';
+            html += '<button onclick="downloadResults()" class="secondary">⬇ Download Results</button>';
             html += '<button onclick="analyzeAnother()" class="secondary">📁 Analyze Another File</button>';
             html += '</div>';
             html += '</div>';
@@ -1501,7 +1534,7 @@
                 <span>Result saved to history</span>
                 <a href="/history" style="color:#7c6ff7;text-decoration:none;font-weight:600;white-space:nowrap;">View History →</a>
                 <button onclick="this.parentElement.remove()"
-                        style="background:none;border:none;color:#4a5578;cursor:pointer;font-size:1.1em;padding:0 0 0 4px;">✕</button>
+                        style="background:none;border:none;color:#8892b0;cursor:pointer;font-size:1.1em;padding:0 0 0 4px;">✕</button>
             `;
 
             const style = document.createElement('style');
@@ -1509,6 +1542,96 @@
             document.head.appendChild(style);
             document.body.appendChild(banner);
             setTimeout(() => banner.style.opacity === '1' && banner.remove(), 8000);
+        }
+
+        function downloadResults() {
+            const resultsDiv = document.getElementById('results');
+            if (!resultsDiv || !resultsDiv.classList.contains('show')) {
+                alert('No results to download — run an analysis first.');
+                return;
+            }
+
+            // Pull metadata from the rendered results
+            const domainEl  = resultsDiv.querySelector('h2');
+            const domain    = domainEl ? domainEl.textContent.replace('Analysis of: ', '').trim() : 'unknown';
+            const dateStr   = new Date().toISOString().slice(0, 10);
+            const safeFilename = domain.replace(/[^a-z0-9.-]/gi, '_').toLowerCase();
+
+            // Clone the results HTML and strip interactive elements
+            const clone = resultsDiv.cloneNode(true);
+            // Remove action buttons and generate panel from clone
+            clone.querySelectorAll('.actions, #generatePanel, .btn, button').forEach(el => el.remove());
+
+            const bodyHtml = clone.innerHTML;
+
+            const fullHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>HAR Analysis — ${domain}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #ffffff;
+    color: #1a1a2e;
+    line-height: 1.6;
+    padding: 32px;
+    max-width: 1000px;
+    margin: 0 auto;
+  }
+  .report-header {
+    border-bottom: 2px solid #e0e0e0;
+    padding-bottom: 16px;
+    margin-bottom: 24px;
+  }
+  .report-header h1 { font-size: 1.4em; color: #1a1a2e; }
+  .report-header p  { font-size: 0.88em; color: #555; margin-top: 4px; }
+  /* Remap dark theme card styles to light */
+  .timeline-card, .summary-card {
+    background: #f8f9fc;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .timeline-card h3, .summary-card h3 { color: #1a1a2e; margin-bottom: 12px; }
+  .pii-item {
+    background: #fff3e0;
+    border: 1px solid #ffcc80;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+  }
+  .vendor-header { font-weight: 700; font-size: 1.05em; margin-bottom: 8px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.88em; }
+  th { background: #f0f0f0; padding: 8px 10px; border: 1px solid #ccc; text-align: left; }
+  td { padding: 7px 10px; border: 1px solid #ddd; }
+  .score-badge { display:inline-block; padding:3px 10px; border-radius:4px;
+                 font-weight:700; font-size:0.85em; margin-right:8px; }
+  .actions { display: none !important; }
+  @media print {
+    body { padding: 16px; }
+    .actions { display: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="report-header">
+  <h1>HAR Privacy Analysis — ${domain}</h1>
+  <p>Generated: ${new Date().toLocaleString()} &nbsp;|&nbsp; Source: HAR Privacy Analyzer</p>
+</div>
+${bodyHtml}
+</body>
+</html>`;
+
+            const blob = new Blob([fullHtml], { type: 'text/html' });
+            const url  = URL.createObjectURL(blob);
+            const a    = document.createElement('a');
+            a.href     = url;
+            a.download = `har-results-${safeFilename}-${dateStr}.html`;
+            a.click();
+            URL.revokeObjectURL(url);
         }
 
         function copyTimeline() {
@@ -1646,10 +1769,18 @@
                     <div class="generate-panel-row">
                         <span class="generate-model-label">Model:</span>
                         <select class="generate-model-select" id="generateModel">${opts}</select>
-                        <span class="generate-cost-est" id="generateCostEst"></span>
+                    </div>
+                    <div class="generate-panel-row">
+                        <span class="generate-model-label">Format:</span>
+                        <div class="format-toggle">
+                            <input type="radio" name="generateFormat" id="fmtHtml" value="html" checked>
+                            <label for="fmtHtml">HTML</label>
+                            <input type="radio" name="generateFormat" id="fmtDocx" value="docx">
+                            <label for="fmtDocx">Word (.docx)</label>
+                        </div>
                     </div>
                     <button class="generate-btn" id="generateBtn" onclick="generateReport()">
-                        ▶ Generate &amp; Download HTML
+                        ▶ Generate &amp; Download
                     </button>
                     <div class="generate-warning">⚠️ Review output before use in legal proceedings</div>
                     <div class="generate-status" id="generateStatus"></div>`;
@@ -1669,42 +1800,57 @@
             const btn    = document.getElementById('generateBtn');
             const status = document.getElementById('generateStatus');
             const model  = document.getElementById('generateModel')?.value || 'claude-haiku-4-5-20251001';
+            const fmt    = document.querySelector('input[name="generateFormat"]:checked')?.value || 'html';
 
-            btn.disabled      = true;
-            btn.textContent   = '⏳ Generating...';
+            btn.disabled       = true;
+            btn.textContent    = '⏳ Generating...';
             status.textContent = 'Sending to Claude — this may take 15–30 seconds...';
             status.style.color = '#8892b0';
 
             try {
-                const res  = await fetch(`/api/generate-report/${_generateAnalysisId}`, {
+                const res = await fetch(`/api/generate-report/${_generateAnalysisId}`, {
                     method:  'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body:    JSON.stringify({ model }),
+                    body:    JSON.stringify({ model, format: fmt }),
                 });
-                const data = await res.json();
 
                 if (!res.ok) {
-                    throw new Error(data.error || `HTTP ${res.status}`);
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.error || `HTTP ${res.status}`);
                 }
 
-                // Trigger download
-                const blob = new Blob([data.html], { type: 'text/html' });
-                const url  = URL.createObjectURL(blob);
-                const a    = document.createElement('a');
-                a.href     = url;
-                a.download = `litigation-package-${_generateAnalysisId.slice(0,8)}.html`;
-                a.click();
-                URL.revokeObjectURL(url);
+                if (fmt === 'docx') {
+                    // docx comes back as binary — use blob directly from response
+                    const blob = await res.blob();
+                    const url  = URL.createObjectURL(blob);
+                    const a    = document.createElement('a');
+                    a.href     = url;
+                    a.download = `litigation-package-${_generateAnalysisId.slice(0,8)}.docx`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    status.textContent = '✅ Word document downloaded';
+                    status.style.color = '#4caf7d';
+                } else {
+                    // html — JSON response with html string
+                    const data = await res.json();
+                    const blob = new Blob([data.html], { type: 'text/html' });
+                    const url  = URL.createObjectURL(blob);
+                    const a    = document.createElement('a');
+                    a.href     = url;
+                    a.download = `litigation-package-${_generateAnalysisId.slice(0,8)}.html`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    status.textContent = `✅ Report generated — ${data.input_tokens.toLocaleString()} input + ${data.output_tokens.toLocaleString()} output tokens`;
+                    status.style.color = '#4caf7d';
+                }
 
-                status.textContent = `✅ Report generated — ${data.input_tokens.toLocaleString()} input + ${data.output_tokens.toLocaleString()} output tokens`;
-                status.style.color = '#4caf7d';
-                btn.textContent    = '▶ Generate Again';
-                btn.disabled       = false;
+                btn.textContent = '▶ Generate Again';
+                btn.disabled    = false;
 
             } catch (err) {
                 status.textContent = `❌ ${err.message}`;
                 status.style.color = '#e05c5c';
-                btn.textContent    = '▶ Generate & Download HTML';
+                btn.textContent    = '▶ Generate & Download';
                 btn.disabled       = false;
             }
         }

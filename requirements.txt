@@ -4,3 +4,4 @@ pymongo==4.7.2
 python-dotenv==1.0.1
 anthropic>=0.109.0
 pypdf==4.3.1
+python-docx==1.1.2

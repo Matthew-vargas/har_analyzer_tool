@@ -21,8 +21,8 @@
             --yellow:       #d4b84a;
             --green:        #4caf7d;
             --text:         #e2e6f3;
-            --text-dim:     #8892b0;
-            --text-faint:   #4a5578;
+            --text-dim:     #b0bbd4;
+            --text-faint:   #8892b0;
             --mono:         'IBM Plex Mono', monospace;
             --sans:         'IBM Plex Sans', sans-serif;
         }
@@ -638,20 +638,41 @@
         </div>
 
         <div class="card">
-            <div class="card-title">Token Usage</div>
+            <div class="card-title">Token Usage &amp; Cost</div>
+
+            <!-- Period toggle -->
+            <div style="display:flex;gap:6px;margin-bottom:18px;">
+                <button id="toggleAllTime"  onclick="setUsagePeriod('all')"
+                        style="padding:5px 16px;border-radius:6px;font-size:0.82em;font-weight:600;
+                               border:1px solid var(--purple);background:var(--purple);color:#fff;cursor:pointer;">
+                    All Time
+                </button>
+                <button id="toggle30Days" onclick="setUsagePeriod('30')"
+                        style="padding:5px 16px;border-radius:6px;font-size:0.82em;font-weight:500;
+                               border:1px solid var(--border-light);background:none;color:var(--text-dim);cursor:pointer;">
+                    Last 30 Days
+                </button>
+            </div>
+
+            <!-- Warning banner (shown when spend threshold exceeded) -->
+            <div id="costWarning" style="display:none;padding:10px 14px;margin-bottom:14px;
+                 background:rgba(212,184,74,0.1);border:1px solid rgba(212,184,74,0.3);
+                 border-radius:7px;font-size:0.85em;color:var(--yellow);">
+                ⚠️ <span id="costWarningText"></span>
+            </div>
 
             <div class="stat-grid">
                 <div class="stat-box">
                     <div class="stat-val" id="totalTokens">—</div>
-                    <div class="stat-label">Total Tokens Used</div>
+                    <div class="stat-label">Total Tokens</div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-val" id="totalCalls">—</div>
-                    <div class="stat-label">Total API Calls</div>
+                    <div class="stat-label">API Calls</div>
                 </div>
                 <div class="stat-box">
-                    <div class="stat-val" id="estCost">—</div>
-                    <div class="stat-label">Est. Cost (Haiku rates)</div>
+                    <div class="stat-val" id="estCost" style="color:var(--green);">—</div>
+                    <div class="stat-label">Est. Cost</div>
                 </div>
             </div>
 
@@ -670,7 +691,16 @@
                 </div>
             </div>
 
-            <div class="btn-row">
+            <!-- Per-model breakdown (30-day only) -->
+            <div id="modelBreakdown" style="display:none;margin-top:14px;">
+                <div style="font-family:var(--mono);font-size:0.72em;color:var(--text-faint);
+                            letter-spacing:0.08em;text-transform:uppercase;margin-bottom:10px;">
+                    Breakdown by Model (Last 30 Days)
+                </div>
+                <div id="modelBreakdownRows"></div>
+            </div>
+
+            <div class="btn-row" style="margin-top:16px;">
                 <button class="btn-secondary" onclick="refreshUsage()">↻ Refresh</button>
             </div>
         </div>
@@ -962,12 +992,72 @@ DAMAGES:
         if (tab === 'api') refreshUsage();
     }
 
-    // ── API & Usage tab ───────────────────────────────────────
+    // ── API & Usage tab ────────────────────────────────────────
+    let _usagePeriod = 'all';
+    let _usageData   = null;
+
+    function setUsagePeriod(period) {
+        _usagePeriod = period;
+        const allBtn = document.getElementById('toggleAllTime');
+        const d30Btn = document.getElementById('toggle30Days');
+        const active   = 'padding:5px 16px;border-radius:6px;font-size:0.82em;font-weight:600;border:1px solid var(--purple);background:var(--purple);color:#fff;cursor:pointer;';
+        const inactive = 'padding:5px 16px;border-radius:6px;font-size:0.82em;font-weight:500;border:1px solid var(--border-light);background:none;color:var(--text-dim);cursor:pointer;';
+        if (allBtn) allBtn.style.cssText = period === 'all' ? active : inactive;
+        if (d30Btn) d30Btn.style.cssText = period === '30'  ? active : inactive;
+        if (_usageData) renderUsageStats(_usageData);
+    }
+
+    function renderUsageStats(data) {
+        const period = _usagePeriod === '30' ? data.last_30_days : data.all_time;
+        if (!period) return;
+        const inp   = period.input_tokens  || period.input  || 0;
+        const out   = period.output_tokens || period.output || 0;
+        const calls = period.calls || 0;
+        const cost  = period.cost  || 0;
+        document.getElementById('totalTokens').textContent  = (inp + out).toLocaleString();
+        document.getElementById('totalCalls').textContent   = calls.toLocaleString();
+        document.getElementById('inputTokens').textContent  = inp.toLocaleString();
+        document.getElementById('outputTokens').textContent = out.toLocaleString();
+        document.getElementById('estCost').textContent      = cost < 0.001 ? '$0.00' : `$${cost.toFixed(3)}`;
+
+        // Per-model breakdown (30-day only)
+        const breakdown = document.getElementById('modelBreakdown');
+        const rows      = document.getElementById('modelBreakdownRows');
+        if (breakdown && _usagePeriod === '30' && data.last_30_days?.by_model?.length > 0) {
+            breakdown.style.display = 'block';
+            rows.innerHTML = data.last_30_days.by_model.map(m => `
+                <div style="display:grid;grid-template-columns:1fr auto auto auto;gap:12px;
+                            align-items:center;padding:8px 12px;background:var(--surface-2);
+                            border:1px solid var(--border);border-radius:6px;margin-bottom:6px;font-size:0.83em;">
+                    <span style="font-family:var(--mono);color:var(--text);">${m.model}</span>
+                    <span style="color:var(--text-dim);">${m.calls} call${m.calls !== 1 ? 's' : ''}</span>
+                    <span style="color:var(--text-dim);">${(m.input_tokens + m.output_tokens).toLocaleString()} tokens</span>
+                    <span style="color:var(--green);font-weight:600;">$${m.cost.toFixed(4)}</span>
+                </div>`).join('');
+        } else if (breakdown) {
+            breakdown.style.display = 'none';
+        }
+
+        // Spend warning (threshold: $5 / 30 days)
+        const WARN_THRESHOLD = 5.00;
+        const warn30    = data.last_30_days?.cost || 0;
+        const warningEl = document.getElementById('costWarning');
+        const warnTxt   = document.getElementById('costWarningText');
+        if (warningEl) warningEl.style.display = warn30 >= WARN_THRESHOLD ? 'block' : 'none';
+        if (warnTxt && warn30 >= WARN_THRESHOLD)
+            warnTxt.textContent = `30-day spend ($${warn30.toFixed(2)}) has exceeded the $${WARN_THRESHOLD.toFixed(2)} alert threshold.`;
+    }
+
     async function refreshUsage() {
         try {
-            const res  = await fetch('/api/claude/status');
-            const data = await res.json();
-            updateStatusUI(data);
+            const [statusRes, usageRes] = await Promise.all([
+                fetch('/api/claude/status'),
+                fetch('/api/admin/usage/summary'),
+            ]);
+            const statusData = await statusRes.json();
+            const usageData  = await usageRes.json().catch(() => null);
+            await updateStatusUI(statusData);
+            if (usageData) { _usageData = usageData; renderUsageStats(usageData); }
         } catch (e) {
             document.getElementById('apiStatusText').textContent = 'Server unreachable';
         }
@@ -1021,27 +1111,11 @@ DAMAGES:
             keyBadge.className    = 'status-badge badge-red';
         }
 
-        // Token usage
-        const usage = data.usage || {};
-        const inp   = usage.total_input_tokens  || 0;
-        const out   = usage.total_output_tokens || 0;
-        const calls = usage.total_calls         || 0;
-        const total = inp + out;
-
-        document.getElementById('totalTokens').textContent  = total.toLocaleString();
-        document.getElementById('totalCalls').textContent   = calls.toLocaleString();
-        document.getElementById('inputTokens').textContent  = inp.toLocaleString();
-        document.getElementById('outputTokens').textContent = out.toLocaleString();
-
-        // Estimate cost at Haiku rates: $1/MTok in, $5/MTok out
-        const cost = ((inp / 1_000_000) * 1.00) + ((out / 1_000_000) * 5.00);
-        document.getElementById('estCost').textContent = cost < 0.01 ? '<$0.01' : `$${cost.toFixed(3)}`;
-
-        // Reports generated — placeholder until Phase 3
-        // Fetch report count from litigation_reports collection
+        // Token stats are now populated by renderUsageStats() via /api/admin/usage/summary
+        // Just update the reports generated count here
         try {
-            const rr   = await fetch('/api/reports/count');
-            const rd   = await rr.json();
+            const rr = await fetch('/api/reports/count');
+            const rd = await rr.json();
             document.getElementById('reportsGenerated').textContent =
                 (rd.count !== undefined) ? rd.count.toLocaleString() : '—';
         } catch (e) {
