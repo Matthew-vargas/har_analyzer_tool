@@ -77,8 +77,8 @@ except ImportError:
 
 app = Flask(__name__, static_folder='static')
 
-# Increase max upload size to 100MB
-app.config['MAX_CONTENT_LENGTH'] = 600 * 1024 * 1024  # 600 MB (covers 5x 100MB batch uploads + multipart overhead)
+# Max upload size — 150MB single file, 5x150MB bulk = 750MB + overhead
+app.config['MAX_CONTENT_LENGTH'] = 800 * 1024 * 1024  # 800MB covers bulk uploads with overhead
 
 
 
@@ -2639,7 +2639,18 @@ def analyze():
         
         if not file.filename.endswith('.har'):
             return jsonify({'error': 'File must be a .har file'}), 400
-        
+
+        # Reject files over 150MB before reading into memory
+        file.seek(0, 2)  # seek to end
+        file_bytes = file.tell()
+        file.seek(0)     # seek back to start
+        if file_bytes > 150 * 1024 * 1024:
+            size_mb = file_bytes / 1024 / 1024
+            return jsonify({
+                'error': f'File too large ({size_mb:.0f}MB). Maximum file size is 150MB. '
+                         f'Consider splitting the session or using a shorter recording window.'
+            }), 413
+
         # Load HAR data with robust error handling
         try:
             # Read file content
@@ -2973,7 +2984,7 @@ def analyze_bulk():
     import tempfile, shutil
 
     MAX_FILES     = 5
-    MAX_SIZE_BYTES = 100 * 1024 * 1024  # 100MB per file
+    MAX_SIZE_BYTES = 150 * 1024 * 1024  # 150MB per file
 
     files = request.files.getlist('files')
 
@@ -3019,7 +3030,7 @@ def analyze_bulk():
             if file_size > MAX_SIZE_BYTES:
                 size_mb = file_size / (1024 * 1024)
                 result = {'event': 'file_done', 'index': idx, 'filename': filename,
-                          'status': 'error', 'error': f'File too large ({size_mb:.0f}MB — max 100MB)',
+                          'status': 'error', 'error': f'File too large ({size_mb:.0f}MB — max 150MB)',
                           'current': idx + 1, 'total': total}
                 summaries.append(result)
                 os.unlink(tmp_path)
