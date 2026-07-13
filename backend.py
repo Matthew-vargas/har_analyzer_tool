@@ -758,12 +758,19 @@ def find_first_party_domain(har_data):
                 'segment', 'sentry', 'hotjar', 'intercom',
                 'zendesk', 'stripe', 'twilio', 'sendgrid',
                 'mixpanel', 'heap', 'mouseflow',
-                # New session replay / behavioral vendors
-                'clarity.ms',       # now in VENDOR_PATTERNS — keep in skip for domain detection
+                # P1 session replay / behavioral vendors
+                'clarity.ms',
                 'fullstory.com', 'rs.fullstory.com',
                 'hs-scripts.com', 'hsforms.net', 'hubspot.com',
                 'ct.pinterest.com', 'pinimg.com',
-                'mountain.com', 'datadoghq.com',
+                'mountain.com', 'datadoghq.com', 'marketo.net',
+                # P2 session replay vendors
+                'hotjar.com', 'inspectlet.com', 'luckyorange.com',
+                'crazyegg.com', 'sessioncam.com', 'quantummetric.com',
+                'contentsquare.com', 'clicktale.net', 'dynatrace.com',
+                'dt-cdn.net', 'pendo.io', 'mouseflow.com',
+                'heapanalytics.com', 'heap.io', 'mixpanel.com',
+                'posthog.com', 'yandex.ru', 'mc.yandex.ru',
             ]
             
             if any(skip in domain.lower() for skip in skip_domains):
@@ -857,6 +864,54 @@ def detect_vendor_requests(entries):
                        'browser-intake-datadoghq.com', 'rum.browser-intake-datadoghq.com',
                        'session-replay.browser-intake-datadoghq.com'],
                       'session_replay'),
+
+        # ── Session replay vendors (P2 list) ─────────────────────────────────
+        'hotjar':         ('Hotjar', 'critical',
+                           ['hotjar.com', 'static.hotjar.com', 'script.hotjar.com',
+                            'insights.hotjar.com'],
+                           'session_replay'),
+        'inspectlet':     ('Inspectlet', 'critical',
+                           ['inspectlet.com', 'cdn.inspectlet.com', 'ws.inspectlet.com'],
+                           'session_replay'),
+        'luckyorange':    ('Lucky Orange', 'critical',
+                           ['luckyorange.com', 'lo.luckyorange.com', 'cdn.luckyorange.com'],
+                           'session_replay'),
+        'crazyegg':       ('Crazy Egg', 'high',
+                           ['crazyegg.com', 'script.crazyegg.com', 'dnn506yrbagrg.cloudfront.net'],
+                           'session_replay'),
+        'sessioncam':     ('SessionCam', 'critical',
+                           ['sessioncam.com', 'cdn.sessioncam.com'],
+                           'session_replay'),
+        'quantummetric':  ('Quantum Metric', 'critical',
+                           ['quantummetric.com', 'cdn.quantummetric.com', 'qm-prod.quantummetric.com'],
+                           'session_replay'),
+        'contentsquare':  ('Contentsquare', 'critical',
+                           ['contentsquare.com', 'clicktale.net', 'api.contentsquare.net',
+                            'sdk.contentsquare.net'],
+                           'session_replay'),
+        'dynatrace':      ('Dynatrace RUM', 'high',
+                           ['dynatrace.com', 'dt-cdn.net', 'js-cdn.dynatrace.com'],
+                           'session_replay'),
+        'pendo':          ('Pendo', 'high',
+                           ['pendo.io', 'cdn.pendo.io', 'app.pendo.io', 'data.pendo.io'],
+                           'session_replay'),
+        'mouseflow':      ('Mouseflow', 'high',
+                           ['mouseflow.com', 'cdn.mouseflow.com', 'a.mouseflow.com'],
+                           'session_replay'),
+        'heap':           ('Heap Analytics', 'high',
+                           ['heap.io', 'heapanalytics.com', 'cdn.heapanalytics.com'],
+                           'behavioral_tracking'),
+        'mixpanel':       ('Mixpanel', 'medium',
+                           ['mixpanel.com', 'api.mixpanel.com', 'api-js.mixpanel.com'],
+                           'behavioral_tracking'),
+        'posthog':        ('PostHog', 'medium',
+                           ['posthog.com', 'eu.posthog.com', 'us.posthog.com',
+                            'app.posthog.com'],
+                           'behavioral_tracking'),
+        'yandex':         ('Yandex Metrica', 'high',
+                           ['mc.yandex.ru', 'mc.yandex.com', 'metrika.yandex.ru',
+                            'yandex.ru/metrika'],
+                           'session_replay'),
     }
 
     # Vendor type used in UI and litigation extract
@@ -1786,13 +1841,14 @@ def get_admin_settings():
     Falls back to defaults if DB unavailable or doc not found.
     """
     defaults = {
-        'system_prompt':      DEFAULT_SYSTEM_PROMPT,
-        'prompt_version':     'v1.0',
-        'blank_template':     '',
-        'sample_reference':   '',
-        'default_model':      DEFAULT_MODEL,
-        'model_list':         DEFAULT_MODEL_LIST,
-        'models_refreshed_at': None,
+        'system_prompt':           DEFAULT_SYSTEM_PROMPT,
+        'prompt_version':          'v1.0',
+        'blank_template':          '',
+        'sample_reference':        '',
+        'default_model':           DEFAULT_MODEL,
+        'model_list':              DEFAULT_MODEL_LIST,
+        'models_refreshed_at':     None,
+        'spend_warning_threshold': 5.00,   # $ per 30 days
     }
     if not MONGO_ENABLED:
         return defaults
@@ -1833,7 +1889,7 @@ def api_admin_settings_post():
         return jsonify({'error': 'Database not available', 'saved': False}), 503
 
     data = request.get_json(silent=True) or {}
-    allowed = {'system_prompt', 'blank_template', 'sample_reference', 'default_model'}
+    allowed = {'system_prompt', 'blank_template', 'sample_reference', 'default_model', 'spend_warning_threshold'}
     update  = {k: v for k, v in data.items() if k in allowed}
 
     if not update:
