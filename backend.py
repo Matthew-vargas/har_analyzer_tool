@@ -436,6 +436,10 @@ def extract_pii_from_params(params):
         '_et', 'tfd', 'tcfd',  # Google Analytics encrypted params
         '.js', '.css', '.png', '.jpg', '.gif',  # File extensions
         'script', 'src', 'href',  # HTML/resource references
+        # Fix 2: User-agent / device / browser metadata — NOT typed PII
+        'uap', 'uafv', 'uab', 'uam', 'ua_', '_ua', 'user_agent',
+        'useragent', 'platform', 'os_', '_os', 'browser', 'device',
+        'sec-ch-ua', 'architecture', 'bitness', 'model', 'wow64',
     ]
     
     # Check each parameter
@@ -512,7 +516,9 @@ def extract_pii_from_params(params):
                 elif label == 'Phone':
                     # Validate phone: must be 10 digits, no dots or 'fb' prefix
                     clean = re.sub(r'[^\d]', '', val_str)
-                    if len(clean) == 10 and not any(c in val_str.lower() for c in ['fb', 'ga', '.']):
+                    # Fix 3: Reject Unix timestamps >= 1,500,000,000
+                    is_ts = len(clean) == 10 and int(clean) >= 1_500_000_000
+                    if len(clean) == 10 and not any(c in val_str.lower() for c in ['fb', 'ga', '.']) and not is_ts:
                         pii.append({
                             'type': label,
                             'field': key,
@@ -522,24 +528,17 @@ def extract_pii_from_params(params):
                         break
                 
                 elif label == 'Zip Code':
-                    # Validate zip: exactly 5 digits
-                    if re.match(r'^\d{5}$', val_str):
-                        # Reject single-letter field names (too ambiguous)
-                        if len(key) <= 1:
-                            matched = True
-                            break
-                        
-                        # Reject if field name suggests it's NOT a zip (but allow zipcode/zip_code)
-                        # Check for patterns like 'eventCode', 'errorCode' but NOT 'zipCode'
-                        suspicious_patterns = ['eventcode', 'errorcode', 'statuscode', 'responsecode', 'orderid', 'sessionid']
-                        if not any(pattern in key_lower for pattern in suspicious_patterns):
-                            pii.append({
-                                'type': label,
-                                'field': key,
-                                'value': val_str
-                            })
-                            matched = True
-                            break
+                    # Fix 4: Validate zip: exactly 5 digits AND field name must be zip-specific
+                    ZIP_FIELD_INDICATORS = ['zip', 'postal', 'postcode', 'post_code', 'zipcode',
+                                            'zip_code', 'postalcode', 'postal_code']
+                    if re.match(r'^\d{5}$', val_str) and any(ind in key_lower for ind in ZIP_FIELD_INDICATORS):
+                        pii.append({
+                            'type': label,
+                            'field': key,
+                            'value': val_str
+                        })
+                        matched = True
+                        break
                 
                 elif label == 'SSN':
                     # Validate SSN: 9 digits or XXX-XX-XXXX format
@@ -607,8 +606,12 @@ def extract_pii_from_params(params):
             # Phone pattern - be more careful but still detect
             # Must be EXACTLY 10 digits OR formatted phone (xxx-xxx-xxxx, (xxx) xxx-xxxx)
             elif re.match(r'^(\d{10}|\d{3}-\d{3}-\d{4}|\(\d{3}\)\s*\d{3}-\d{4})$', val_str):
-                # Extra validation: no dots, not part of tracking ID
-                if '.' not in val_str and 'fb' not in val_str.lower() and '_' not in val_str:
+                # Fix 3: Reject Unix timestamps — 10-digit numbers >= 1,500,000,000
+                # are almost certainly epoch timestamps (covers Jan 2018 onward)
+                digits_only = re.sub(r'[^\d]', '', val_str)
+                is_timestamp = len(digits_only) == 10 and int(digits_only) >= 1_500_000_000
+                # Extra validation: no dots, not part of tracking ID, not a timestamp
+                if '.' not in val_str and 'fb' not in val_str.lower() and '_' not in val_str and not is_timestamp:
                     pii.append({
                         'type': 'Phone',
                         'field': key,
@@ -616,22 +619,19 @@ def extract_pii_from_params(params):
                     })
             
             # Zip code pattern - must be exactly 5 digits
-            # Additional check: field name shouldn't suggest it's a code/ID
+            # Fix 4: REQUIRE field name to contain zip/postal context
+            # Without field name evidence, 5-digit values could be campaign IDs,
+            # dealer IDs, event codes, viewport params, etc. — do not guess.
             elif re.match(r'^\d{5}$', val_str):
-                # Skip single-letter field names (too ambiguous like 'o', 'v', etc.)
-                if len(key) <= 2:
-                    continue
-                
-                # Skip if field name suggests it's not a zip (ID, code, count, order, index, etc.)
-                if any(word in key_lower for word in ['code', 'id', 'event', 'version', 'count', 'order', 'index', 'sequence', 'number']):
-                    continue
-                
-                # Only accept if looks like real US zip (not starting with 0 is rare but valid)
-                pii.append({
-                    'type': 'Zip Code',
-                    'field': key,
-                    'value': val_str
-                })
+                ZIP_FIELD_INDICATORS = ['zip', 'postal', 'postcode', 'post_code', 'zipcode',
+                                        'zip_code', 'postalcode', 'postal_code']
+                if any(ind in key_lower for ind in ZIP_FIELD_INDICATORS):
+                    pii.append({
+                        'type': 'Zip Code',
+                        'field': key,
+                        'value': val_str
+                    })
+                # else: label as unclassified — do not append
             
             # Name pattern - capitalized word with length > 2
             # Be VERY careful - filenames often match this pattern!
@@ -771,6 +771,14 @@ def find_first_party_domain(har_data):
                 'dt-cdn.net', 'pendo.io', 'mouseflow.com',
                 'heapanalytics.com', 'heap.io', 'mixpanel.com',
                 'posthog.com', 'yandex.ru', 'mc.yandex.ru',
+                # Fix 5: Vendor CDN/infrastructure domains — never first-party
+                # even when their scripts are embedded by the site
+                'invocacdn.com', 'pnapi.invoca.net', 'invoca.net',
+                'invoca.com', 'solutions.invocacdn.com',
+                'cdn.', 'static.', 'assets.', 'js.', 'pixel.',
+                'analytics.', 'tracking.', 'collect.',
+                'doubleclick.net', 'googletagservices.com',
+                'googlesyndication.com', 'g.doubleclick.net',
             ]
             
             if any(skip in domain.lower() for skip in skip_domains):
@@ -938,7 +946,7 @@ def detect_vendor_requests(entries):
         for key, (name, risk, _, vtype) in VENDOR_PATTERNS.items()
     }
 
-    for entry in entries:
+    for har_index, entry in enumerate(entries, start=1):  # 1-based original HAR position
         url_lower = entry.get('request', {}).get('url', '').lower()
         full_url  = entry.get('request', {}).get('url', '')
         method    = entry.get('request', {}).get('method', 'GET')
@@ -974,6 +982,7 @@ def detect_vendor_requests(entries):
                 'field':     pii_item.get('field', ''),
                 'timestamp': timestamp,
                 'url':       full_url[:100],
+                'har_index': har_index,   # original 1-based HAR entry number
                 'note':      pii_item.get('note', ''),
                 'request_details': {
                     'method':          method,
@@ -995,6 +1004,7 @@ def detect_vendor_requests(entries):
             'response_code':   response_status,
             'response_time_ms': int(time_ms) if time_ms else 0,
             'has_pii':         has_pii,
+            'har_index':       har_index,   # original 1-based HAR entry number
         }
 
         # Accumulate — NO 'entry' reference stored anywhere
@@ -1135,11 +1145,22 @@ def analyze_first_party_requests(entries, first_party_domain):
                     'url': url[:100]
                 })
     
+    # Deduplicate first-party PII on (type, value) so count and display always match
+    seen_fp = set()
+    deduped_fp_pii = []
+    for p in first_party_pii:
+        key = f"{p['type']}:{p['value']}"
+        # Also filter noise values here at the source
+        noise = {'leadgen flow', 'leadgen', 'true', 'false', 'null', 'undefined', ''}
+        if key not in seen_fp and p.get('value', '').lower() not in noise:
+            seen_fp.add(key)
+            deduped_fp_pii.append(p)
+
     return {
-        'pii_items': first_party_pii,
+        'pii_items': deduped_fp_pii,
         'post_requests': first_party_posts,
         'post_count': len(first_party_posts),
-        'pii_count': len(set(f"{p['type']}:{p['value']}" for p in first_party_pii))
+        'pii_count': len(deduped_fp_pii)
     }
 
 
@@ -1328,8 +1349,17 @@ def analyze_har_simple(har_data):
     leadid_request_count = 0
 
     for vendor_key, vendor_data in detected_vendors.items():
-        pii = vendor_data['pii']
-        pii_count = len(set(f"{p['type']}:{p['value']}" for p in pii))
+        pii_raw = vendor_data['pii']
+        # Deduplicate on (type, value) — same hash from udff[em] and audff[em]
+        # counts as one violation, keep the first occurrence per unique type+value
+        seen_pii = set()
+        pii = []
+        for p in pii_raw:
+            key = f"{p['type']}:{p['value']}"
+            if key not in seen_pii:
+                seen_pii.add(key)
+                pii.append(p)
+        pii_count = len(pii)
 
         vendors_with_pii[vendor_key] = {
             'name':          vendor_data['name'],
@@ -1404,63 +1434,93 @@ def build_litigation_extract(results, risk):
 
     # ── Vendor timeline ───────────────────────────────────────────────────────
     lines.append("=" * 60)
-    lines.append("VENDOR TIMELINE (chronological)")
+    lines.append("VENDOR TIMELINE (chronological, original HAR IDs)")
     lines.append("=" * 60)
 
-    # Collect all requests across all vendors, sorted by timestamp
+    # Build a lookup: (vendor_name, url[:80], timestamp[:19]) → pii_item
+    # so we can annotate all_requests rows with PII detail when they match
+    pii_lookup = {}
+    for vdata in vendors.values():
+        vname = vdata['name']
+        for pii in vdata.get('pii', []):
+            key = (vname, pii.get('url', '')[:80], pii.get('timestamp', '')[:19])
+            if key not in pii_lookup:
+                pii_lookup[key] = []
+            pii_lookup[key].append(pii)
+
+    # Collect ALL vendor requests from all_requests (which carries har_index)
+    # This gives us every request with its true original HAR position
     all_events = []
     for vkey, vdata in vendors.items():
-        vname = vdata['name']
+        vname     = vdata['name']
+        vtype     = vdata.get('vendor_type', 'analytics')
         for req in vdata.get('all_requests', []):
+            har_idx   = req.get('har_index')   # original 1-based HAR position
+            ts        = req.get('timestamp', '')
+            url       = req.get('url', '')
+            method    = req.get('method', 'GET')
+            resp_code = req.get('response_code', 0)
+            # Look up any PII associated with this request
+            lookup_key = (vname, url[:80], ts[:19])
+            pii_items  = pii_lookup.get(lookup_key, [])
             all_events.append({
-                'timestamp': req.get('timestamp', ''),
-                'vendor':    vname,
-                'method':    req.get('method', ''),
-                'url':       req.get('url', ''),
-                'has_pii':   req.get('has_pii', False),
-            })
-        for pii in vdata.get('pii', []):
-            # PII items have their own timestamp and URL
-            all_events.append({
-                'timestamp': pii.get('timestamp', ''),
-                'vendor':    vname,
-                'method':    pii.get('request_details', {}).get('method', ''),
-                'url':       pii.get('url', ''),
-                'has_pii':   True,
-                'pii_item':  pii,
+                'har_index':   har_idx,
+                'timestamp':   ts,
+                'vendor':      vname,
+                'vendor_type': vtype,
+                'method':      method,
+                'url':         url,
+                'resp_code':   resp_code,
+                'has_pii':     req.get('has_pii', False),
+                'pii_items':   pii_items,
             })
 
-    # Sort by timestamp
-    all_events.sort(key=lambda x: x.get('timestamp', ''))
+    # Sort by original HAR index (most reliable ordering)
+    all_events.sort(key=lambda x: (x.get('har_index') or 9999, x.get('timestamp', '')))
 
-    # Deduplicate — use (vendor, url, timestamp) as key, prefer pii_item entries
-    seen_events = {}
     for ev in all_events:
-        key = (ev['vendor'], ev['url'][:60], ev['timestamp'][:19])
-        if key not in seen_events or ev.get('pii_item'):
-            seen_events[key] = ev
+        har_idx   = ev.get('har_index')
+        ts        = ev.get('timestamp', '')[:23]
+        vendor    = ev['vendor']
+        vtype     = ev.get('vendor_type', '')
+        method    = ev.get('method', 'GET')
+        url       = ev.get('url', '')
+        resp_code = ev.get('resp_code', 0)
+        pii_items = ev.get('pii_items', [])
 
-    for idx, ev in enumerate(seen_events.values(), start=1):
-        ts      = ev.get('timestamp', '')[:23]
-        vendor  = ev['vendor']
-        method  = ev.get('method', 'GET')
-        url     = ev.get('url', '')
-        pii     = ev.get('pii_item')
+        # Always use original HAR ID — never a derived sequence number
+        har_label = f"HAR #{har_idx}" if har_idx else "HAR #UNKNOWN"
+
+        # Vendor type label for context
+        vtype_labels = {
+            'session_replay':      'SESSION REPLAY',
+            'behavioral_tracking': 'BEHAVIORAL TRACKING',
+            'lead_capture':        'LEAD CAPTURE',
+            'call_tracking':       'CALL TRACKING',
+            'ctv_attribution':     'CTV ATTRIBUTION',
+            'analytics_replay':    'ANALYTICS+REPLAY',
+            'analytics':           'ANALYTICS',
+        }
+        vtype_label = vtype_labels.get(vtype, vtype.upper())
 
         lines.append("")
-        lines.append(f"[{ts}] #{idx} {vendor} | {method} {url[:80]}")
+        lines.append(f"[{ts}] {har_label} | {vendor} [{vtype_label}]")
+        lines.append(f"  {method} {url[:100]}")
+        lines.append(f"  HTTP: {resp_code}")
 
-        if pii:
-            ptype = pii.get('type', '')
-            is_plain  = 'Hashed' not in ptype
-            is_hashed = 'Hashed' in ptype
-            lines.append(f"  Type: {'PLAINTEXT PII' if is_plain else 'HASHED PII'}")
-            lines.append(f"  Field: {pii.get('field', '')} → {pii.get('value', '')}")
-            legal = pii.get('legal_context', {})
-            if legal.get('cipa_elements'):
-                lines.append(f"  Legal: {legal['cipa_elements'][0] if legal['cipa_elements'] else ''}")
+        if pii_items:
+            for pii in pii_items:
+                ptype  = pii.get('type', '')
+                pval   = pii.get('value', '')
+                field  = pii.get('field', '')
+                is_hash = ptype.startswith('Hashed')
+                classification = 'HASHED PII' if is_hash else 'PLAINTEXT PII'
+                lines.append(f"  ⚠ {classification}: field={field}, value={pval} [{ptype}]")
+                legal = pii.get('legal_context', {})
+                if legal.get('cipa_elements'):
+                    lines.append(f"    Legal: {legal['cipa_elements'][0]}")
         else:
-            lines.append(f"  Type: Session/Identifier/Tracking")
+            lines.append(f"  Data: Session/identifier/tracking (no PII extracted from payload)")
 
     lines.append("")
 
@@ -1501,38 +1561,42 @@ def build_litigation_extract(results, risk):
             verified_hash_map[h] = (item.get('value', ''), item.get('type', ''))
 
     lines.append("=" * 60)
-    lines.append("THIRD-PARTY PII TRANSMISSIONS")
+    lines.append("THIRD-PARTY PII TRANSMISSIONS (deduplicated, with original HAR IDs)")
     lines.append("=" * 60)
     for vkey, vdata in vendors.items():
         pii_list = vdata.get('pii', [])
         if not pii_list:
             continue
         lines.append(f"\nVendor: {vdata['name']}")
-        lines.append(f"  Requests: {vdata['request_count']}  |  PII items: {vdata['pii_count']}")
+        lines.append(f"  Total requests: {vdata['request_count']}  |  Unique PII items: {vdata['pii_count']}")
         for pii in pii_list:
-            ptype  = pii.get('type', '')
-            pval   = pii.get('value', '')
-            field  = pii.get('field', '')
-            ts     = pii.get('timestamp', '')[:23]
-            method = pii.get('request_details', {}).get('method', '')
+            ptype    = pii.get('type', '')
+            pval     = pii.get('value', '')
+            field    = pii.get('field', '')
+            ts       = pii.get('timestamp', '')[:23]
+            method   = pii.get('request_details', {}).get('method', '')
+            har_idx  = pii.get('har_index')
+            full_url = pii.get('request_details', {}).get('full_url', pii.get('url', ''))
 
-            # Check if this is a hash and whether we can verify it
+            # Strip truncation marker and use full hash value
+            full_hash_val = pval.rstrip('.')
+
+            # Verify hash against first-party values
             is_hash = ptype.startswith('Hashed')
             verified_plaintext = None
             verified_type      = None
-            if is_hash:
-                # pval may be truncated (e.g. "db8d59b2...") — look for full value
-                # The full value is in the field name or other pii entries
-                full_hash = pval.rstrip('.')
-                if full_hash in verified_hash_map:
-                    verified_plaintext, verified_type = verified_hash_map[full_hash]
+            if is_hash and full_hash_val in verified_hash_map:
+                verified_plaintext, verified_type = verified_hash_map[full_hash_val]
 
-            line = f"  [{ts}] {method} | {field} = {pval}  [{ptype}]"
+            har_label = f"HAR #{har_idx}" if har_idx else "HAR #?"
+            lines.append(f"  {har_label} [{ts}] {method}")
+            lines.append(f"    URL: {full_url[:100]}")
+            lines.append(f"    Field: {field}")
+            lines.append(f"    Value: {full_hash_val}  [{ptype}]")
             if is_hash and verified_plaintext:
-                line += f"  ✓ VERIFIED: matches first-party {verified_type} value"
+                lines.append(f"    ✓ VERIFIED: cryptographically matches first-party {verified_type}")
             elif is_hash:
-                line += f"  — UNVERIFIED: hash does not match any known first-party plaintext value"
-            lines.append(line)
+                lines.append(f"    — UNVERIFIED: no matching first-party plaintext found")
     lines.append("")
 
     # ── Identifier propagation ────────────────────────────────────────────────
@@ -1808,6 +1872,33 @@ You MUST follow these rules strictly:
 - In the damages analysis, unverified hashes may still be counted as violations but must be described accurately as "unverified hashed transmission" not as a confirmed disclosure of a specific value"""
 
 DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
+
+# Hardcoded completeness block — always appended to every Claude API call.
+# Lives in code, not the admin-editable prompt, so it cannot be accidentally removed.
+COMPLETENESS_ENFORCEMENT = """
+
+=============================================================
+MANDATORY COMPLETION REQUIREMENTS — DO NOT OMIT ANY SECTION
+=============================================================
+You MUST produce every section of the litigation package through
+to the very end, including the Damages Analysis and the final
+Contamination Check table. Do not stop early under any circumstances.
+If output length is a concern, reduce verbosity in earlier sections
+rather than omitting later ones. The following sections are all
+required in every output:
+  1. Declaration-Ready Timeline
+  2. Detailed Expert Declaration
+  3. CIPA Elements Table
+  4. Vendor-by-Vendor Data Classification Matrix
+  5. Identifier Propagation Map
+  6. Partial-to-Full Value Reconstruction
+  7. Damages Analysis (conservative / hybrid / aggressive)
+  8. Cookie Blocking Analysis
+  9. Third-Party ID Sharing / Cookie Sync Table
+  10. Final Contamination Check Table
+Every damages entry must cite an exact original HAR ID.
+The contamination check table is mandatory in every output.
+============================================================="""
 
 # Available models — updated via /api/admin/models/refresh
 DEFAULT_MODEL_LIST = [
@@ -3321,20 +3412,34 @@ def api_generate_report(analysis_id):
 
     user_message = ''.join(user_parts)
 
-    # Call Claude API
-    try:
-        response = _anthropic_client.messages.create(
-            model=model,
-            max_tokens=16000,
-            system=system_prompt,
-            messages=[{'role': 'user', 'content': user_message}]
-        )
+    # Always append the hardcoded completeness enforcement block
+    # This cannot be removed via the admin panel prompt editor
+    enforced_system_prompt = system_prompt + COMPLETENESS_ENFORCEMENT
 
-        markdown_output = response.content[0].text if response.content else ''
-        input_tokens    = response.usage.input_tokens
-        output_tokens   = response.usage.output_tokens
+    # Call Claude API using streaming to avoid 10-minute timeout on long responses
+    # stream() accumulates the full response — frontend receives a single JSON response
+    # exactly as before, no frontend changes needed.
+    try:
+        markdown_output = ''
+        input_tokens    = 0
+        output_tokens   = 0
+
+        with _anthropic_client.messages.stream(
+            model=model,
+            max_tokens=32000,
+            system=enforced_system_prompt,
+            messages=[{'role': 'user', 'content': user_message}]
+        ) as stream:
+            for text_chunk in stream.text_stream:
+                markdown_output += text_chunk
+
+            # Final message contains usage stats
+            final_msg   = stream.get_final_message()
+            input_tokens  = final_msg.usage.input_tokens
+            output_tokens = final_msg.usage.output_tokens
 
         track_token_usage(input_tokens, output_tokens, model=model)
+        print(f"✅ Streaming complete: {input_tokens} input + {output_tokens} output tokens")
 
     except Exception as e:
         print(f"⚠️  Claude API call failed: {e}")

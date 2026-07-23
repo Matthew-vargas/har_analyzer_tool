@@ -885,6 +885,104 @@
             color: #5a3e00;
         }
 
+        /* ── Generation Overlay ─────────────────────────────────────── */
+        .gen-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(10, 8, 20, 0.88);
+            backdrop-filter: blur(4px);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 24px;
+        }
+        .gen-overlay.visible { display: flex; }
+
+        .gen-overlay-card {
+            background: #181c27;
+            border: 1px solid #2a3050;
+            border-radius: 16px;
+            padding: 40px 48px;
+            text-align: center;
+            max-width: 480px;
+            width: 90%;
+            box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+        }
+
+        .gen-overlay-icon {
+            font-size: 2.8em;
+            margin-bottom: 16px;
+            animation: pulse-icon 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse-icon {
+            0%, 100% { transform: scale(1);   opacity: 1; }
+            50%       { transform: scale(1.1); opacity: 0.8; }
+        }
+
+        .gen-overlay-title {
+            font-size: 1.15em;
+            font-weight: 700;
+            color: #e2e6f3;
+            margin-bottom: 8px;
+        }
+
+        .gen-overlay-subtitle {
+            font-size: 0.88em;
+            color: #b0bbd4;
+            margin-bottom: 24px;
+            line-height: 1.5;
+        }
+
+        .gen-overlay-timer {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 2em;
+            font-weight: 700;
+            color: #7c6ff7;
+            margin-bottom: 8px;
+            letter-spacing: 0.05em;
+        }
+
+        .gen-overlay-elapsed {
+            font-size: 0.78em;
+            color: #8892b0;
+            margin-bottom: 24px;
+        }
+
+        .gen-overlay-warning {
+            font-size: 0.8em;
+            color: #d4b84a;
+            background: rgba(212,184,74,0.08);
+            border: 1px solid rgba(212,184,74,0.25);
+            border-radius: 7px;
+            padding: 10px 14px;
+            line-height: 1.5;
+        }
+
+        .gen-progress-bar {
+            width: 100%;
+            height: 3px;
+            background: #1f2436;
+            border-radius: 2px;
+            margin-bottom: 24px;
+            overflow: hidden;
+        }
+
+        .gen-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #7c6ff7, #a89af7);
+            border-radius: 2px;
+            animation: progress-indefinite 2.5s ease-in-out infinite;
+            width: 40%;
+        }
+
+        @keyframes progress-indefinite {
+            0%   { transform: translateX(-100%); }
+            100% { transform: translateX(350%); }
+        }
+
         /* ── Generate Litigation Package Panel ──────────────────── */
         .generate-panel {
             background: #181c27;
@@ -1987,6 +2085,25 @@
   <p>Generated: ${new Date().toLocaleString()} &nbsp;|&nbsp; Source: HAR Privacy Analyzer</p>
 </div>
 ${bodyHtml}
+<!-- ── Generation overlay — shown while Claude is working ── -->
+<div class="gen-overlay" id="genOverlay">
+    <div class="gen-overlay-card">
+        <div class="gen-overlay-icon">⚖️</div>
+        <div class="gen-overlay-title">Generating Litigation Package</div>
+        <div class="gen-overlay-subtitle">
+            Claude is analyzing the HAR data and producing your<br>
+            court-ready litigation package. This takes 5–10 minutes.
+        </div>
+        <div class="gen-progress-bar"><div class="gen-progress-fill"></div></div>
+        <div class="gen-overlay-timer" id="genOverlayTimer">0:00</div>
+        <div class="gen-overlay-elapsed">elapsed — please keep this tab open</div>
+        <div class="gen-overlay-warning">
+            ⚠️ Do not close or navigate away from this tab.<br>
+            The download will start automatically when complete.
+        </div>
+    </div>
+</div>
+
 </body>
 </html>`;
 
@@ -2118,9 +2235,9 @@ ${bodyHtml}
                     </div>`;
             } else {
                 const models = [
-                    { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5',  cost: '~$0.03–0.08' },
-                    { id: 'claude-sonnet-4-6',          label: 'Claude Sonnet 4.6', cost: '~$0.10–0.22' },
-                    { id: 'claude-opus-4-6',            label: 'Claude Opus 4.6',   cost: '~$0.15–0.35' },
+                    { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (draft only — 8K output limit)',  cost: '~$0.03–0.08' },
+                    { id: 'claude-sonnet-4-6',          label: 'Claude Sonnet 4.6 (recommended)',                  cost: '~$0.18–0.35' },
+                    { id: 'claude-opus-4-6',            label: 'Claude Opus 4.6 (highest quality)',                cost: '~$0.25–0.50' },
                 ];
                 const opts = models.map(m =>
                     `<option value="${m.id}" ${m.id === defaultModel ? 'selected' : ''}>${m.label} — ${m.cost}</option>`
@@ -2160,6 +2277,41 @@ ${bodyHtml}
             }
         }
 
+        // ── Overlay helpers ──────────────────────────────────────
+        let _overlayTimer = null;
+        let _overlayStart = null;
+
+        function showGenOverlay() {
+            const overlay = document.getElementById('genOverlay');
+            const timerEl = document.getElementById('genOverlayTimer');
+            if (!overlay) return;
+            _overlayStart = Date.now();
+            overlay.classList.add('visible');
+            // Warn user before unloading
+            window._genUnloadWarning = function(e) {
+                e.preventDefault();
+                e.returnValue = 'Litigation package is still generating. Leave anyway?';
+            };
+            window.addEventListener('beforeunload', window._genUnloadWarning);
+            // Tick every second
+            _overlayTimer = setInterval(() => {
+                const secs  = Math.floor((Date.now() - _overlayStart) / 1000);
+                const mins  = Math.floor(secs / 60);
+                const s     = String(secs % 60).padStart(2, '0');
+                if (timerEl) timerEl.textContent = `${mins}:${s}`;
+            }, 1000);
+        }
+
+        function hideGenOverlay() {
+            const overlay = document.getElementById('genOverlay');
+            if (overlay) overlay.classList.remove('visible');
+            if (_overlayTimer) { clearInterval(_overlayTimer); _overlayTimer = null; }
+            if (window._genUnloadWarning) {
+                window.removeEventListener('beforeunload', window._genUnloadWarning);
+                window._genUnloadWarning = null;
+            }
+        }
+
         async function generateReport() {
             if (!_generateAnalysisId) return;
             const btn    = document.getElementById('generateBtn');
@@ -2169,8 +2321,9 @@ ${bodyHtml}
 
             btn.disabled       = true;
             btn.textContent    = '⏳ Generating...';
-            status.textContent = 'Sending to Claude — this may take 15–30 seconds...';
+            status.textContent = 'Claude is working — this takes 5–10 minutes. Keep this tab open.';
             status.style.color = '#8892b0';
+            showGenOverlay();
 
             try {
                 const res = await fetch(`/api/generate-report/${_generateAnalysisId}`, {
@@ -2199,6 +2352,7 @@ ${bodyHtml}
                     a.download     = `litigation-package-${dateStr2}.docx`;
                     a.click();
                     URL.revokeObjectURL(url);
+                    hideGenOverlay();
                     status.textContent = '✅ Word document downloaded';
                     status.style.color = '#4caf7d';
                 } else {
@@ -2212,6 +2366,7 @@ ${bodyHtml}
                     a.download     = `litigation-package-${dateStr}.html`;
                     a.click();
                     URL.revokeObjectURL(url);
+                    hideGenOverlay();
                     status.textContent = `✅ Report generated — ${data.input_tokens.toLocaleString()} input + ${data.output_tokens.toLocaleString()} output tokens`;
                     status.style.color = '#4caf7d';
                 }
@@ -2220,6 +2375,7 @@ ${bodyHtml}
                 btn.disabled    = false;
 
             } catch (err) {
+                hideGenOverlay();
                 status.textContent = `❌ ${err.message}`;
                 status.style.color = '#e05c5c';
                 btn.textContent    = '▶ Generate & Download';
