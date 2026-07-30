@@ -2,6 +2,13 @@
 HAR Privacy Analyzer - Application Entry Point
 """
 
+# Monkey-patch must happen before any other imports when using gevent worker
+try:
+    from gevent import monkey
+    monkey.patch_all()
+except ImportError:
+    pass  # gevent not installed (local dev without it is fine)
+
 import os
 
 # Load .env file for local development (no-op in production where env vars are set directly)

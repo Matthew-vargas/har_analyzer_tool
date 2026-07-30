@@ -2316,7 +2316,7 @@ ${bodyHtml}
             if (!_generateAnalysisId) return;
             const btn    = document.getElementById('generateBtn');
             const status = document.getElementById('generateStatus');
-            const model  = document.getElementById('generateModel')?.value || 'claude-haiku-4-5-20251001';
+            const model  = document.getElementById('generateModel')?.value || 'claude-sonnet-4-6';
             const fmt    = document.querySelector('input[name="generateFormat"]:checked')?.value || 'html';
 
             btn.disabled       = true;
@@ -2326,6 +2326,8 @@ ${bodyHtml}
             showGenOverlay();
 
             try {
+                // Use fetch with SSE — EventSource doesn't support POST,
+                // so we use fetch() and read the response body as a stream.
                 const res = await fetch(`/api/generate-report/${_generateAnalysisId}`, {
                     method:  'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -2337,42 +2339,76 @@ ${bodyHtml}
                     throw new Error(err.error || `HTTP ${res.status}`);
                 }
 
-                if (fmt === 'docx') {
-                    // docx comes back as binary — use blob directly from response
-                    // date_str not available here (no JSON), build from current date
-                    const now      = new Date();
-                    const mm       = String(now.getMonth()+1).padStart(2,'0');
-                    const dd       = String(now.getDate()).padStart(2,'0');
-                    const yyyy     = now.getFullYear();
-                    const dateStr2 = `${mm}${dd}${yyyy}`;
-                    const blob     = await res.blob();
-                    const url      = URL.createObjectURL(blob);
-                    const a        = document.createElement('a');
-                    a.href         = url;
-                    a.download     = `litigation-package-${dateStr2}.docx`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                    hideGenOverlay();
-                    status.textContent = '✅ Word document downloaded';
-                    status.style.color = '#4caf7d';
-                } else {
-                    // html — JSON response with html string
-                    const data = await res.json();
-                    const blob     = new Blob([data.html], { type: 'text/html' });
-                    const url      = URL.createObjectURL(blob);
-                    const a        = document.createElement('a');
-                    const dateStr  = data.date_str || new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}).replace(/\//g,'');
-                    a.href         = url;
-                    a.download     = `litigation-package-${dateStr}.html`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                    hideGenOverlay();
-                    status.textContent = `✅ Report generated — ${data.input_tokens.toLocaleString()} input + ${data.output_tokens.toLocaleString()} output tokens`;
-                    status.style.color = '#4caf7d';
-                }
+                // Read SSE stream line by line
+                const reader  = res.body.getReader();
+                const decoder = new TextDecoder();
+                let   buffer  = '';
 
-                btn.textContent = '▶ Generate Again';
-                btn.disabled    = false;
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // Process complete SSE lines
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();  // keep incomplete last line
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        let event;
+                        try { event = JSON.parse(line.slice(6)); }
+                        catch (e) { continue; }
+
+                        if (event.type === 'chunk') {
+                            // Live token count in status
+                            // (optional: could build a preview here)
+
+                        } else if (event.type === 'done') {
+                            // Generation complete — trigger download
+                            const dateStr = event.date_str ||
+                                new Date().toLocaleDateString('en-US',
+                                    {month:'2-digit',day:'2-digit',year:'numeric'})
+                                    .replace(/\//g,'');
+
+                            if (event.format === 'docx' && event.docx_b64) {
+                                // Decode base64 docx and download
+                                const binary = atob(event.docx_b64);
+                                const bytes  = new Uint8Array(binary.length);
+                                for (let i = 0; i < binary.length; i++)
+                                    bytes[i] = binary.charCodeAt(i);
+                                const blob = new Blob([bytes], {
+                                    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                                });
+                                const url = URL.createObjectURL(blob);
+                                const a   = document.createElement('a');
+                                a.href    = url;
+                                a.download = `litigation-package-${dateStr}.docx`;
+                                a.click();
+                                URL.revokeObjectURL(url);
+                                hideGenOverlay();
+                                status.textContent = '✅ Word document downloaded';
+                                status.style.color = '#4caf7d';
+                            } else if (event.html) {
+                                const blob = new Blob([event.html], { type: 'text/html' });
+                                const url  = URL.createObjectURL(blob);
+                                const a    = document.createElement('a');
+                                a.href     = url;
+                                a.download = `litigation-package-${dateStr}.html`;
+                                a.click();
+                                URL.revokeObjectURL(url);
+                                hideGenOverlay();
+                                status.textContent = `✅ Report generated — ${event.input_tokens.toLocaleString()} input + ${event.output_tokens.toLocaleString()} output tokens`;
+                                status.style.color = '#4caf7d';
+                            }
+
+                            btn.textContent = '▶ Generate Again';
+                            btn.disabled    = false;
+
+                        } else if (event.type === 'error') {
+                            throw new Error(event.message);
+                        }
+                    }
+                }
 
             } catch (err) {
                 hideGenOverlay();

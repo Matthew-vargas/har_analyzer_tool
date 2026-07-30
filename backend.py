@@ -3,7 +3,7 @@ HAR Privacy Analyzer - Phase 1
 Focus: LeadID detection with large file support and automatic corruption repair
 """
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 import json
 import re
 import base64
@@ -3350,41 +3350,45 @@ def analyze_bulk():
 @app.route('/api/generate-report/<analysis_id>', methods=['POST'])
 def api_generate_report(analysis_id):
     """
-    Generate a litigation package HTML report for a completed analysis.
-    Loads the litigation_extract from MongoDB, sends to Claude with the
-    saved system prompt and templates, converts Markdown to HTML, stores
-    the result, and returns the HTML for download.
+    Generate a litigation package using Server-Sent Events (SSE).
+
+    Streams Claude output directly to the browser as it arrives so
+    Render's 60-second gateway timeout never fires — each SSE chunk
+    resets the idle timer.
+
+    SSE event types sent to client:
+      data: {"type":"chunk",  "text":"..."}            — markdown chunk
+      data: {"type":"done",   "report_id":"...",
+              "input_tokens":N, "output_tokens":N,
+              "date_str":"MMDDYYYY", "format":"html|docx",
+              "html":"..." | "docx_b64":"..."}
+      data: {"type":"error",  "message":"..."}
     """
     if not CLAUDE_ENABLED:
         return jsonify({'error': 'Claude API not configured — set ANTHROPIC_API_KEY'}), 503
-
     if not MONGO_ENABLED:
         return jsonify({'error': 'Database not available'}), 503
 
-    # Get model and format from request body
-    data        = request.get_json(silent=True) or {}
-    model       = data.get('model') or get_admin_settings().get('default_model', DEFAULT_MODEL)
-    out_format  = data.get('format', 'html').lower()  # 'html' or 'docx'
+    data       = request.get_json(silent=True) or {}
+    model      = data.get('model') or get_admin_settings().get('default_model', DEFAULT_MODEL)
+    out_format = data.get('format', 'html').lower()
     if out_format not in ('html', 'docx'):
         out_format = 'html'
 
-    # Load litigation extract from MongoDB
     doc = _col_single.find_one({'analysis_id': analysis_id}, {'_id': 0})
     if not doc:
         return jsonify({'error': 'Analysis not found'}), 404
 
     extract = doc.get('litigation_extract')
     if not extract:
-        return jsonify({'error': 'No litigation extract found — re-analyze the file to generate one'}), 400
+        return jsonify({'error': 'No litigation extract found — re-analyze the file'}), 400
 
-    # Load admin settings (prompt, templates)
-    settings        = get_admin_settings()
-    system_prompt   = settings.get('system_prompt') or DEFAULT_SYSTEM_PROMPT
-    blank_template  = settings.get('blank_template', '')
-    sample_ref      = settings.get('sample_reference', '')
-    prompt_version  = settings.get('prompt_version', 'v1.0')
+    settings       = get_admin_settings()
+    system_prompt  = settings.get('system_prompt') or DEFAULT_SYSTEM_PROMPT
+    blank_template = settings.get('blank_template', '')
+    sample_ref     = settings.get('sample_reference', '')
+    prompt_version = settings.get('prompt_version', 'v1.0')
 
-    # Build user message
     user_parts = [
         "Below is the structured HAR analysis data. "
         "Produce the complete litigation package following your instructions.\n\n",
@@ -3393,112 +3397,96 @@ def api_generate_report(analysis_id):
         "=" * 60 + "\n",
         extract,
     ]
-
     if blank_template:
-        user_parts += [
-            "\n\n" + "=" * 60 + "\n",
-            "OUTPUT STRUCTURE TEMPLATE (follow this section format):\n",
-            "=" * 60 + "\n",
-            blank_template[:8000],
-        ]
-
+        user_parts += ["\n\n" + "=" * 60 + "\n",
+                       "OUTPUT STRUCTURE TEMPLATE (follow this section format):\n",
+                       "=" * 60 + "\n", blank_template[:8000]]
     if sample_ref:
-        user_parts += [
-            "\n\n" + "=" * 60 + "\n",
-            "QUALITY REFERENCE EXAMPLE (match this depth and style):\n",
-            "=" * 60 + "\n",
-            sample_ref[:8000],
-        ]
+        user_parts += ["\n\n" + "=" * 60 + "\n",
+                       "QUALITY REFERENCE EXAMPLE (match this depth and style):\n",
+                       "=" * 60 + "\n", sample_ref[:8000]]
 
-    user_message = ''.join(user_parts)
-
-    # Always append the hardcoded completeness enforcement block
-    # This cannot be removed via the admin panel prompt editor
+    user_message           = ''.join(user_parts)
     enforced_system_prompt = system_prompt + COMPLETENESS_ENFORCEMENT
 
-    # Call Claude API using streaming to avoid 10-minute timeout on long responses
-    # stream() accumulates the full response — frontend receives a single JSON response
-    # exactly as before, no frontend changes needed.
-    try:
+    def generate_sse():
         markdown_output = ''
-        input_tokens    = 0
-        output_tokens   = 0
-
-        with _anthropic_client.messages.stream(
-            model=model,
-            max_tokens=32000,
-            system=enforced_system_prompt,
-            messages=[{'role': 'user', 'content': user_message}]
-        ) as stream:
-            for text_chunk in stream.text_stream:
-                markdown_output += text_chunk
-
-            # Final message contains usage stats
-            final_msg   = stream.get_final_message()
-            input_tokens  = final_msg.usage.input_tokens
-            output_tokens = final_msg.usage.output_tokens
-
-        track_token_usage(input_tokens, output_tokens, model=model)
-        print(f"✅ Streaming complete: {input_tokens} input + {output_tokens} output tokens")
-
-    except Exception as e:
-        print(f"⚠️  Claude API call failed: {e}")
-        return jsonify({'error': f'Claude API error: {str(e)}'}), 500
-
-    # Convert Markdown to HTML
-    html_content = markdown_to_html(markdown_output)
-
-    # Save report METADATA only to MongoDB — no report content stored (legal requirement)
-    report_id  = str(uuid.uuid4())
-    generated_date = datetime.now(timezone.utc)
-    try:
-        _col_reports.insert_one({
-            'report_id':      report_id,
-            'analysis_id':    analysis_id,
-            'created_at':     generated_date,
-            'model_used':     model,
-            'prompt_version': prompt_version,
-            'input_tokens':   input_tokens,
-            'output_tokens':  output_tokens,
-            'status':         'complete',
-            # NOTE: report content (markdown/html) is NOT stored — legal requirement.
-            # Users must download the file at generation time.
-        })
-        # Mark that a report was generated for this analysis (metadata only)
-        _col_single.update_one(
-            {'analysis_id': analysis_id},
-            {'$set': {'has_report': True, 'report_id': report_id}}
-        )
-        print(f"✅ Litigation report metadata saved: {report_id} (content not stored)")
-    except Exception as e:
-        print(f"⚠️  Report metadata save failed (non-fatal): {e}")
-
-    # Return docx as binary download, or JSON with html content
-    if out_format == 'docx':
         try:
-            from flask import send_file
-            docx_buf = markdown_to_docx(markdown_output)
-            return send_file(
-                docx_buf,
-                mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                as_attachment=True,
-                download_name=f'litigation-package-{generated_date.strftime("%m%d%Y")}.docx',
-            )
+            with _anthropic_client.messages.stream(
+                model=model,
+                max_tokens=32000,
+                system=enforced_system_prompt,
+                messages=[{'role': 'user', 'content': user_message}]
+            ) as stream:
+                for chunk in stream.text_stream:
+                    markdown_output += chunk
+                    yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
+
+                final_msg     = stream.get_final_message()
+                input_tokens  = final_msg.usage.input_tokens
+                output_tokens = final_msg.usage.output_tokens
+
+            track_token_usage(input_tokens, output_tokens, model=model)
+
+            # Save metadata to MongoDB
+            report_id      = str(uuid.uuid4())
+            generated_date = datetime.now(timezone.utc)
+            date_str       = generated_date.strftime('%m%d%Y')
+            try:
+                _col_reports.insert_one({
+                    'report_id':      report_id,
+                    'analysis_id':    analysis_id,
+                    'created_at':     generated_date,
+                    'model_used':     model,
+                    'prompt_version': prompt_version,
+                    'input_tokens':   input_tokens,
+                    'output_tokens':  output_tokens,
+                    'status':         'complete',
+                })
+                _col_single.update_one(
+                    {'analysis_id': analysis_id},
+                    {'$set': {'has_report': True, 'report_id': report_id}}
+                )
+                print(f"✅ SSE generation complete: {input_tokens}in + {output_tokens}out")
+            except Exception as db_err:
+                print(f'⚠️  Metadata save failed: {db_err}')
+
+            # Build done payload
+            done_payload = {
+                'type':          'done',
+                'report_id':     report_id,
+                'input_tokens':  input_tokens,
+                'output_tokens': output_tokens,
+                'date_str':      date_str,
+                'format':        out_format,
+            }
+
+            if out_format == 'docx':
+                try:
+                    docx_buf = markdown_to_docx(markdown_output)
+                    done_payload['docx_b64'] = base64.b64encode(docx_buf.read()).decode('ascii')
+                except Exception as docx_err:
+                    print(f'⚠️  docx conversion failed, falling back to html: {docx_err}')
+                    done_payload['format'] = 'html'
+                    done_payload['html']   = markdown_to_html(markdown_output)
+            else:
+                done_payload['html'] = markdown_to_html(markdown_output)
+
+            yield f"data: {json.dumps(done_payload)}\n\n"
+
         except Exception as e:
-            # Fall back to HTML if docx generation fails
-            print(f'⚠️  docx generation failed, falling back to HTML: {e}')
+            print(f"⚠️  SSE generation error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
-    date_str = generated_date.strftime('%m%d%Y')
-
-    return jsonify({
-        'report_id':     report_id,
-        'analysis_id':   analysis_id,
-        'model_used':    model,
-        'input_tokens':  input_tokens,
-        'output_tokens': output_tokens,
-        'date_str':      date_str,   # used for filename e.g. 06252026
-        'html':          html_content,
-    })
+    return Response(
+        stream_with_context(generate_sse()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control':     'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection':        'keep-alive',
+        }
+    )
 
 
 @app.route('/api/reports/count', methods=['GET'])
