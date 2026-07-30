@@ -23,4 +23,4 @@ EXPOSE 5000
 ENV FLASK_ENV=production
 
 # Use gunicorn for production (handles concurrency and SSE properly)
-CMD gunicorn --bind 0.0.0.0:$PORT --timeout 300 --worker-class sync --workers 1 app:app
+CMD gunicorn --bind 0.0.0.0:$PORT --timeout 600 --worker-class sync --workers 1 app:app
