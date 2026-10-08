@@ -308,6 +308,27 @@ def detect_hash_pattern(key, value):
                 'value': value[:16] + '...',
                 'note': 'Full hash: ' + value
             }
+        # TrustedForm /fingerprints and /events carry SHA-1 hashes of
+        # email (lowercase) and phone (digits-only) in a JSON array where
+        # the key is a numeric index — no "email"/"phone" label present.
+        # Flag all such 40-char hex values in fingerprint contexts so the
+        # litigation package can report them for cryptographic verification.
+        if any(term in key_lower for term in ['fingerprint', 'fp', 'hash', 'digest',
+                                              'checksum', 'sig', 'signature']):
+            return {
+                'type': 'Hashed PII (SHA-1, TrustedForm fingerprint)',
+                'field': key,
+                'value': value[:16] + '...',
+                'note': 'Full hash: ' + value + ' — likely SHA-1 of email or phone (digits-only)'
+            }
+        # Numeric-index keys (e.g. "[0]", "[1]") in a fingerprints array
+        if re.match(r'^\[?\d+\]?$', key.strip()):
+            return {
+                'type': 'Hashed PII (SHA-1, array position)',
+                'field': key,
+                'value': value[:16] + '...',
+                'note': 'Full hash: ' + value + ' — SHA-1 fingerprint; verify against email/phone'
+            }
     
     # MD5 (32 hex characters)
     elif re.match(r'^[a-f0-9]{32}$', value.lower()):
@@ -446,23 +467,28 @@ def extract_pii_from_params(params):
     for key, value in params.items():
         # Handle both single values and lists
         val = value[0] if isinstance(value, list) else value
-        
+
         # Skip empty or very short values
         if not val or len(str(val)) < 2:
             continue
-        
+
         # Skip if value looks like a filename
         if any(ext in str(val).lower() for ext in ['.js', '.css', '.html', '.png', '.jpg', '.svg', '.gif', '.woff']):
             continue
-        
+
         # Convert value to string and apply robust URL decoding
         val_str = robust_url_decode(str(val))
-        
-        # Convert key to lowercase for comparison
+
+        # Convert key to lowercase for comparison.
+        # Also extract the last dotted segment (e.g. 'user.email' → 'email')
+        # so nested JSON keys from LinkedIn/Facebook/etc. still match PII patterns.
         key_lower = key.lower()
-        
+        key_leaf  = key_lower.rsplit('.', 1)[-1].strip('[]0123456789')
+
         # Check if this is a tracking field we should skip
-        if any(exclude in key_lower for exclude in exclude_patterns):
+        # (check both the full key and the leaf to avoid false exclusions)
+        if any(exclude in key_lower for exclude in exclude_patterns) and \
+           any(exclude in key_leaf  for exclude in exclude_patterns):
             continue
         
         # PRIORITY 1: Check for hashed PII (SHA-256, SHA-1, MD5)
@@ -489,14 +515,14 @@ def extract_pii_from_params(params):
         # PRIORITY 3: Check if field name matches known PII fields
         matched = False
         for field_pattern, label in pii_field_patterns.items():
+            fp_lower = field_pattern.lower()
             # For short ambiguous patterns like 'st', require exact match
             if field_pattern in ['st', 'v', 'e', 'ph', 'fn', 'ln']:
-                if key_lower == field_pattern.lower():
-                    field_match = True
-                else:
-                    field_match = False
+                field_match = (key_lower == fp_lower or key_leaf == fp_lower)
             else:
-                field_match = field_pattern.lower() in key_lower
+                # Check both the full key AND the leaf segment so that
+                # nested keys like 'user.email' or 'data[0].firstName' match
+                field_match = fp_lower in key_lower or fp_lower in key_leaf
             
             if field_match:
                 # Additional validation based on type
@@ -694,33 +720,232 @@ def extract_pii_from_json(data, prefix=''):
     
     return pii
 
-def extract_pii_from_request(entry):
+def _parse_multipart_body(text, mime_type):
     """
-    Extract plaintext PII from POST body and query params
+    Parse a multipart/form-data POST body and return a flat dict of
+    {field_name: value} for every part with a Content-Disposition name.
+
+    LeadID's InitFormData and SaveFormField both use multipart encoding.
+    The formdata part contains a JSON array of field objects with 'value'
+    keys that hold the actual text the user typed.
+    """
+    import re as _re
+    result = {}
+
+    # Extract boundary from MIME type header, e.g.
+    #   multipart/form-data; boundary=----WebKitFormBoundaryXYZ
+    boundary_match = _re.search(r'boundary=([^\s;]+)', mime_type or '')
+    if not boundary_match:
+        # Also try to sniff boundary from the body (first line starting with --)
+        first_line = text.split('\n', 1)[0].strip()
+        if first_line.startswith('--'):
+            boundary = first_line[2:]
+        else:
+            return result
+    else:
+        boundary = boundary_match.group(1).strip('"')
+
+    # Split on the boundary delimiter
+    delimiter = '--' + boundary
+    parts = text.split(delimiter)
+
+    for part in parts:
+        if not part or part.strip() in ('', '--'):
+            continue
+        # Split headers from body on blank line
+        if '\r\n\r\n' in part:
+            headers_raw, body = part.split('\r\n\r\n', 1)
+        elif '\n\n' in part:
+            headers_raw, body = part.split('\n\n', 1)
+        else:
+            continue
+
+        # Extract field name from Content-Disposition
+        name_match = _re.search(r'name="([^"]+)"', headers_raw, _re.IGNORECASE)
+        if not name_match:
+            continue
+
+        field_name = name_match.group(1)
+        # Strip trailing boundary/CRLF from body
+        body_value = body.rstrip('\r\n-')
+
+        result[field_name] = body_value
+
+    return result
+
+
+def _decode_leadid_formdata(formdata_json_str):
+    """
+    Decode a LeadID 'formdata' JSON array.
+
+    LeadID's InitFormData and SaveFormField carry a JSON array like:
+      [{"type":"email","id":"EL_email","value":"user@example.com","label":"Email",...}]
+
+    Each element with a non-empty 'value' key is a captured form field.
+    Returns list of PII dicts.
     """
     pii = []
-    
+    try:
+        items = json.loads(formdata_json_str)
+        if not isinstance(items, list):
+            items = [items]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get('value', '')).strip()
+            label = item.get('label', item.get('type', ''))
+            ftype = item.get('type', '').lower()
+            field_id = item.get('id', item.get('tagid', ''))
+
+            # Skip placeholders and empty values
+            if not value or value.lower() in ('', 'null', 'undefined', 'none'):
+                continue
+
+            # Map HTML input type to PII classification
+            if ftype == 'email' or 'email' in label.lower():
+                if re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', value):
+                    pii.append({'type': 'Email', 'field': field_id or 'email', 'value': value,
+                                'note': 'LeadID formdata capture'})
+                elif '@' not in value and len(value) > 3:
+                    # Partial/typo email still captured — flag it
+                    pii.append({'type': 'Email (partial/typo)', 'field': field_id or 'email',
+                                'value': value, 'note': 'LeadID formdata — incomplete email captured'})
+            elif ftype == 'tel' or 'phone' in label.lower():
+                clean = re.sub(r'[^\d]', '', value)
+                if len(clean) >= 10:
+                    pii.append({'type': 'Phone', 'field': field_id or 'tel', 'value': value,
+                                'note': 'LeadID formdata capture'})
+            elif ftype == 'text' and any(w in label.lower() for w in ['first', 'fname', 'given']):
+                if len(value) >= 2:
+                    pii.append({'type': 'First Name', 'field': field_id or 'firstName',
+                                'value': value, 'note': 'LeadID formdata capture'})
+            elif ftype == 'text' and any(w in label.lower() for w in ['last', 'lname', 'surname', 'family']):
+                if len(value) >= 2:
+                    pii.append({'type': 'Last Name', 'field': field_id or 'lastName',
+                                'value': value, 'note': 'LeadID formdata capture'})
+            elif ftype == 'text' and any(w in label.lower() for w in ['address', 'street', 'addr']):
+                if len(value) >= 5:
+                    pii.append({'type': 'Street Address', 'field': field_id or 'address',
+                                'value': value, 'note': 'LeadID formdata capture'})
+            elif ftype == 'text' and any(w in label.lower() for w in ['name']):
+                if len(value) >= 2:
+                    pii.append({'type': 'Full Name', 'field': field_id or 'name',
+                                'value': value, 'note': 'LeadID formdata capture'})
+            elif ftype == 'hidden':
+                pass  # skip hidden fields (tokens, IDs)
+            elif ftype == 'checkbox':
+                pass  # skip checkboxes
+    except Exception:
+        pass
+    return pii
+
+
+# Fix 5: Module-level test profile — populated from admin_settings before analysis.
+# Maps field label → plaintext value (e.g. {'email': 'test@example.com', 'phone': '5551234567'}).
+# When non-empty, a raw-text scan is run against every vendor request body/URL.
+_KNOWN_TEST_VALUES: dict = {}
+
+
+def _known_value_scan(text, source_label=''):
+    """
+    Scan raw text (URL or body) for any known test-profile PII values.
+    Returns list of PII dicts for any matches found.
+    Called from extract_pii_from_request when _KNOWN_TEST_VALUES is populated.
+    """
+    found = []
+    if not _KNOWN_TEST_VALUES or not text:
+        return found
+    TYPE_MAP = {
+        'email':     'Email',
+        'phone':     'Phone',
+        'firstName': 'First Name',
+        'lastName':  'Last Name',
+        'zip':       'Zip Code',
+        'address':   'Street Address',
+    }
+    for field, known_val in _KNOWN_TEST_VALUES.items():
+        if not known_val or len(known_val) < 3:
+            continue
+        if known_val.lower() in text.lower():
+            found.append({
+                'type':  TYPE_MAP.get(field, 'Known PII Value'),
+                'field': field,
+                'value': known_val,
+                'note':  f'Known-value scan match ({source_label}) — value appeared in raw request text',
+            })
+    return found
+
+
+def extract_pii_from_request(entry):
+    """
+    Extract plaintext PII from POST body and query params.
+
+    Handles four body formats:
+      1. JSON body  (application/json or text starting with { / [)
+      2. URL-encoded body (application/x-www-form-urlencoded)
+      3. Multipart body (multipart/form-data) — used by LeadID InitFormData /
+         SaveFormField; also decodes the 'formdata' JSON-array sub-field
+      4. URL-encoded SaveFormField body (value= / tagid= / label= params)
+    """
+    pii = []
+
     # Check POST body
     if 'postData' in entry['request'] and 'text' in entry['request']['postData']:
         text = entry['request']['postData']['text']
         mime_type = entry['request']['postData'].get('mimeType', '')
-        
-        # Try JSON parsing first (regardless of MIME type) if text looks like JSON
+
+        # 1. JSON body
         if text.strip().startswith(('{', '[')):
             try:
                 data = json.loads(text)
                 pii.extend(extract_pii_from_json(data))
-            except:
+            except Exception:
                 pass
-        
-        # URL-encoded parameters
+
+        # 2. URL-encoded body
         if 'application/x-www-form-urlencoded' in mime_type or ('=' in text and '&' in text):
             try:
-                params = parse_qs(text)
+                params = parse_qs(text, keep_blank_values=False)
                 pii.extend(extract_pii_from_params(params))
-            except:
+
+                # LeadID SaveFormField: value= and tagid=/label=/type= are all
+                # top-level params — parse_qs picks them up above, but the
+                # 'label' and 'type' context is lost. Decode them explicitly.
+                url_lower = entry['request'].get('url', '').lower()
+                if 'saveformfield' in url_lower or 'initformdata' in url_lower:
+                    label = params.get('label', [None])[0]
+                    ftype = params.get('type', [None])[0] or ''
+                    value = params.get('value', [None])[0]
+                    tagid = params.get('tagid', ['field'])[0]
+                    if value and label:
+                        synthetic = [{'type': ftype, 'id': tagid, 'label': label, 'value': value}]
+                        extra = _decode_leadid_formdata(json.dumps(synthetic))
+                        # Only add if not already captured by generic param extraction
+                        existing_vals = {p['value'] for p in pii}
+                        for p in extra:
+                            if p['value'] not in existing_vals:
+                                pii.append(p)
+            except Exception:
                 pass
-    
+
+        # 3. Multipart body — used by LeadID InitFormData
+        if 'multipart/form-data' in mime_type or (
+                text.strip().startswith('--') and 'Content-Disposition' in text):
+            parts = _parse_multipart_body(text, mime_type)
+
+            # LeadID: the 'formdata' part is a JSON array of captured fields
+            if 'formdata' in parts:
+                extra = _decode_leadid_formdata(parts['formdata'])
+                existing_vals = {p['value'] for p in pii}
+                for p in extra:
+                    if p['value'] not in existing_vals:
+                        pii.append(p)
+
+            # Also run generic extraction on the other scalar parts
+            scalar_parts = {k: [v] for k, v in parts.items() if k != 'formdata'}
+            if scalar_parts:
+                pii.extend(extract_pii_from_params(scalar_parts))
+
     # Check query string
     url = entry['request']['url']
     if '?' in url:
@@ -728,9 +953,27 @@ def extract_pii_from_request(entry):
             query = url.split('?', 1)[1]
             params = parse_qs(query)
             pii.extend(extract_pii_from_params(params))
-        except:
+        except Exception:
             pass
-    
+
+    # Fix 5: Known-value raw scan — catches PII in obfuscated/unknown field names
+    if _KNOWN_TEST_VALUES:
+        existing_vals = {p['value'].lower() for p in pii}
+        # Scan full URL (catches values in query params with non-standard field names)
+        url_matches = _known_value_scan(url, 'URL')
+        for m in url_matches:
+            if m['value'].lower() not in existing_vals:
+                pii.append(m)
+                existing_vals.add(m['value'].lower())
+        # Scan POST body
+        body_text = entry.get('request', {}).get('postData', {}).get('text', '')
+        if body_text:
+            body_matches = _known_value_scan(body_text, 'POST body')
+            for m in body_matches:
+                if m['value'].lower() not in existing_vals:
+                    pii.append(m)
+                    existing_vals.add(m['value'].lower())
+
     return pii
 
 def find_first_party_domain(har_data):
@@ -939,9 +1182,10 @@ def detect_vendor_requests(entries):
             'risk':          risk,
             'vendor_type':   vtype,
             'request_count': 0,
-            'post_count':    0,
-            'pii':           [],  # extracted PII items (lightweight dicts only)
-            'all_requests':  [],  # summary rows for expandable UI list
+            'post_count':              0,
+            'pii':                     [],  # extracted PII items (lightweight dicts only)
+            'all_requests':            [],  # summary rows for expandable UI list
+            'binary_undecipherable':   0,   # POST requests with undecodable binary bodies
         }
         for key, (name, risk, _, vtype) in VENDOR_PATTERNS.items()
     }
@@ -972,6 +1216,53 @@ def detect_vendor_requests(entries):
 
         # --- PII extraction inline (was extract_pii_from_vendor_requests) ---
         pii_found = extract_pii_from_request(entry)
+
+        # LinkedIn binary payload handling:
+        # LinkedIn's fmt=g format uses a proprietary binary serialisation that
+        # is not JSON/URL-encoded and cannot be decoded structurally.  Chrome
+        # typically captures it as a base64-encoded string in postData.encoding.
+        # Strategy:
+        #   1. If the body has a base64 encoding field, decode it and scan the
+        #      raw bytes as a string — PII values often appear unencoded within
+        #      the binary envelope.
+        #   2. If no PII is found after that scan, tag the request as having an
+        #      undecipherable payload so the report can disclose this explicitly
+        #      rather than silently marking the request as clean.
+        linkedin_binary_undecipherable = False
+        if matched_key == 'linkedin' and method == 'POST':
+            post_data = entry.get('request', {}).get('postData', {})
+            encoding  = post_data.get('encoding', '').lower()
+            body_text = post_data.get('text', '')
+            if encoding == 'base64' and body_text:
+                try:
+                    decoded_bytes = base64.b64decode(body_text)
+                    decoded_str   = decoded_bytes.decode('utf-8', errors='replace')
+                    # Run known-value scan on the decoded binary content
+                    if _KNOWN_TEST_VALUES:
+                        existing_vals = {p['value'].lower() for p in pii_found}
+                        bin_matches = _known_value_scan(decoded_str, 'LinkedIn binary body (base64-decoded)')
+                        for m in bin_matches:
+                            if m['value'].lower() not in existing_vals:
+                                pii_found.append(m)
+                                existing_vals.add(m['value'].lower())
+                except Exception:
+                    pass
+                # If fmt=g is present and no PII was found, flag as undecipherable
+                if 'fmt=g' in full_url and not pii_found:
+                    linkedin_binary_undecipherable = True
+            elif 'fmt=g' in full_url and body_text and not pii_found:
+                # Body captured as text (not base64) but fmt=g — treat as opaque
+                # Still run known-value scan in case values appear as plaintext
+                if _KNOWN_TEST_VALUES:
+                    existing_vals = {p['value'].lower() for p in pii_found}
+                    bin_matches = _known_value_scan(body_text, 'LinkedIn binary body')
+                    for m in bin_matches:
+                        if m['value'].lower() not in existing_vals:
+                            pii_found.append(m)
+                            existing_vals.add(m['value'].lower())
+                if not pii_found:
+                    linkedin_binary_undecipherable = True
+
         pii_items = []
         for pii_item in pii_found:
             is_hashed    = 'Hashed' in pii_item['type']
@@ -998,19 +1289,22 @@ def detect_vendor_requests(entries):
         # --- Build all_requests summary row (was built in analyze_har_simple) ---
         has_pii = len(pii_items) > 0
         all_request_row = {
-            'method':          method,
-            'url':             full_url,
-            'timestamp':       timestamp,
-            'response_code':   response_status,
-            'response_time_ms': int(time_ms) if time_ms else 0,
-            'has_pii':         has_pii,
-            'har_index':       har_index,   # original 1-based HAR entry number
+            'method':                    method,
+            'url':                       full_url,
+            'timestamp':                 timestamp,
+            'response_code':             response_status,
+            'response_time_ms':          int(time_ms) if time_ms else 0,
+            'has_pii':                   has_pii,
+            'har_index':                 har_index,   # original 1-based HAR entry number
+            'binary_undecipherable':     linkedin_binary_undecipherable,
         }
 
         # Accumulate — NO 'entry' reference stored anywhere
         v['request_count'] += 1
         if method == 'POST':
             v['post_count'] += 1
+        if linkedin_binary_undecipherable:
+            v['binary_undecipherable'] += 1
         v['pii'].extend(pii_items)
         v['all_requests'].append(all_request_row)
 
@@ -1321,20 +1615,90 @@ def analyze_har_simple(har_data):
     # 2. First-party analysis (needs raw entries — do before del har_data)
     first_party_analysis = analyze_first_party_requests(entries, first_party)
 
-    # 3. LeadID timeline (needs raw entries — do before del har_data)
-    # We rebuild it from the PII already extracted in step 4 below after the
-    # vendor pass, but we need entries for the timeline builder format.
-    # Build a lightweight capture list now while entries are still alive.
+    # 2b. Option A — seed known-value scan from first-party PII findings.
+    # This runs AFTER first-party analysis but BEFORE vendor detection, so that
+    # _known_value_scan() in extract_pii_from_request catches these values in
+    # third-party payloads even when field names are obfuscated or unlabeled.
+    #
+    # Merge strategy:
+    #   - Start with admin-configured test profile (already in _KNOWN_TEST_VALUES,
+    #     set by the route handler before calling analyze_har_simple)
+    #   - Add any first-party PII values NOT already covered by the admin profile
+    #   - Admin profile values take priority (manual override stays intact)
+    #
+    # Type → profile key mapping (same keys used in admin test_profile)
+    _FP_TYPE_TO_KEY = {
+        'Email':          'email',
+        'Email (partial/typo)': 'email',
+        'Phone':          'phone',
+        'First Name':     'firstName',
+        'Last Name':      'lastName',
+        'Full Name':      'lastName',   # store in lastName slot as fallback
+        'Zip Code':       'zip',
+        'Street Address': 'address',
+        'Address':        'address',
+    }
+    fp_pii_items = first_party_analysis.get('pii_items', [])
+    if fp_pii_items:
+        # Build a set of values already covered by the admin profile
+        _admin_covered = set(v.lower() for v in _KNOWN_TEST_VALUES.values() if v)
+        for fp_item in fp_pii_items:
+            ptype = fp_item.get('type', '')
+            pval  = fp_item.get('value', '').strip()
+            pkey  = _FP_TYPE_TO_KEY.get(ptype)
+            if not pkey or not pval or len(pval) < 3:
+                continue
+            # Skip noise values that leak into first-party detection
+            if pval.lower() in ('true', 'false', 'null', 'undefined', 'none', ''):
+                continue
+            # Only add if this key slot is empty AND value not already covered
+            if pkey not in _KNOWN_TEST_VALUES and pval.lower() not in _admin_covered:
+                _KNOWN_TEST_VALUES[pkey] = pval
+                _admin_covered.add(pval.lower())
+        if _KNOWN_TEST_VALUES:
+            print(f"   Known-value scan seeded from first-party PII: "
+                  f"{list(_KNOWN_TEST_VALUES.keys())}")
+
+    # 3. LeadID timeline + Google Maps keystroke capture
+    # Build lightweight capture lists while entries are still alive.
     leadid_captures = []
-    for entry in entries:
-        url_lower = entry.get('request', {}).get('url', '').lower()
+    maps_keystrokes  = []   # [{timestamp, query, entry_index}]
+
+    for idx, entry in enumerate(entries):
+        url = entry.get('request', {}).get('url', '')
+        url_lower = url.lower()
+
+        # LeadID / TrustedForm / Jornaya
         if any(d in url_lower for d in ['leadid.com', 'jornaya.com', 'trustedform.com', 'trueleadid.com']):
             pii_found = extract_pii_from_request(entry)
             if pii_found:
                 leadid_captures.append({
                     'timestamp': entry.get('startedDateTime', ''),
-                    'url':       entry.get('request', {}).get('url', ''),
+                    'url':       url,
                     'captures':  pii_found,
+                })
+
+        # Google Maps Places Autocomplete — captures partial address keystrokes.
+        # The user-typed text is in the '1s' query parameter (URL-encoded).
+        # Each request represents one or more keystrokes before the user paused.
+        if 'maps.googleapis.com' in url_lower and 'autocomplete' in url_lower.replace('autocompletion', 'autocomplete'):
+            params = {p['name']: p['value'] for p in entry.get('request', {}).get('queryString', [])}
+            # The param name is literally "1s<value>" with no separator — extract from raw URL
+            raw_qs = url.split('?', 1)[1] if '?' in url else ''
+            import re as _re2
+            m = _re2.search(r'(?:^|&)1s([^&]*)', raw_qs)
+            if m:
+                from urllib.parse import unquote as _uq
+                typed = _uq(m.group(1))
+            else:
+                typed = params.get('1s', params.get('input', ''))
+
+            if typed:  # skip empty / session-init calls
+                maps_keystrokes.append({
+                    'entry_index': idx,
+                    'timestamp':   entry.get('startedDateTime', ''),
+                    'query':       typed,
+                    'status':      entry.get('response', {}).get('status', 0),
                 })
 
     # 4. Vendor detection + inline PII extraction (Option D: no entry refs stored)
@@ -1399,6 +1763,8 @@ def analyze_har_simple(har_data):
         'leadid_detected':       leadid_in_vendors,
         'leadid_request_count':  leadid_request_count,
         'timeline':              leadid_timeline,
+
+        'maps_keystrokes': maps_keystrokes,
 
         'pii_count':     len(all_pii),
         'session_start': session_start,
@@ -1543,16 +1909,47 @@ def build_litigation_extract(results, risk):
     import hashlib
 
     def _hashes_of(plaintext):
-        """Return set of common hash representations for a plaintext value."""
+        """
+        Return set of common hash representations for a plaintext value.
+
+        For phones we cover the four most common normalization forms used by
+        ad-tech vendors before hashing:
+          - raw value as provided
+          - digits-only (strip all non-digit characters)
+          - E.164 with US country code (+1 prefix)
+          - E.164 without leading plus (1 + digits)
+
+        All four are hashed with SHA-256, SHA-1, and MD5, giving 12 phone
+        variants.  Emails are lowercased before hashing (the dominant norm).
+        TrustedForm fingerprints use SHA-1 of digits-only phone and lowercase
+        email — both are covered here.
+        """
         encoded = plaintext.encode('utf-8')
-        return {
+        hashes = {
             hashlib.sha256(encoded).hexdigest(),
             hashlib.sha1(encoded).hexdigest(),
             hashlib.md5(encoded).hexdigest(),
-            # Phone numbers are sometimes normalised before hashing
-            hashlib.sha256(plaintext.replace(' ', '').replace('-', '').encode()).hexdigest(),
-            hashlib.sha256(('+1' + plaintext).encode()).hexdigest(),
         }
+        # Email: lowercase normalisation
+        email_norm = plaintext.strip().lower()
+        if email_norm != plaintext:
+            enc_norm = email_norm.encode('utf-8')
+            hashes.update({
+                hashlib.sha256(enc_norm).hexdigest(),
+                hashlib.sha1(enc_norm).hexdigest(),
+                hashlib.md5(enc_norm).hexdigest(),
+            })
+        # Phone: digits-only, E.164 (+1...), and 1... variants
+        digits_only = re.sub(r'[^\d]', '', plaintext)
+        if digits_only and digits_only != plaintext:
+            for phone_norm in (digits_only, '+1' + digits_only, '1' + digits_only):
+                enc_ph = phone_norm.encode('utf-8')
+                hashes.update({
+                    hashlib.sha256(enc_ph).hexdigest(),
+                    hashlib.sha1(enc_ph).hexdigest(),
+                    hashlib.md5(enc_ph).hexdigest(),
+                })
+        return hashes
 
     # Build a map: hash_value → (plaintext_value, plaintext_type)
     verified_hash_map = {}
@@ -1563,6 +1960,28 @@ def build_litigation_extract(results, risk):
     lines.append("=" * 60)
     lines.append("THIRD-PARTY PII TRANSMISSIONS (deduplicated, with original HAR IDs)")
     lines.append("=" * 60)
+
+    # Note vendors with binary-undecipherable payloads (e.g. LinkedIn fmt=g)
+    opaque_vendors = [
+        vdata['name']
+        for vdata in vendors.values()
+        if vdata.get('binary_undecipherable', 0) > 0
+    ]
+    if opaque_vendors:
+        lines.append("")
+        lines.append("NOTE — BINARY-ENCODED PAYLOADS (analysis limitation):")
+        for vdata in vendors.values():
+            n = vdata.get('binary_undecipherable', 0)
+            if n > 0:
+                lines.append(
+                    f"  {vdata['name']}: {n} POST request(s) used a proprietary binary "
+                    f"serialisation format (e.g. LinkedIn fmt=g / protobuf) that cannot be "
+                    f"decoded by this analyser. No PII was extracted from those payloads, but "
+                    f"absence of evidence is not evidence of absence. Server-side logs or a "
+                    f"LinkedIn subpoena would be required to determine the payload contents."
+                )
+        lines.append("")
+
     for vkey, vdata in vendors.items():
         pii_list = vdata.get('pii', [])
         if not pii_list:
@@ -1619,6 +2038,33 @@ def build_litigation_extract(results, risk):
         for val, vendor_set in cross_vendor.items():
             lines.append(f"  Value: {val[:64]}")
             lines.append(f"  Seen by: {', '.join(vendor_set)}")
+        lines.append("")
+
+    # ── Google Maps autocomplete keystroke reconstruction ─────────────────────
+    maps_ks = results.get('maps_keystrokes', [])
+    if maps_ks:
+        lines.append("=" * 60)
+        lines.append("GOOGLE MAPS AUTOCOMPLETE — PARTIAL ADDRESS RECONSTRUCTION")
+        lines.append("=" * 60)
+        lines.append("Sequential Maps AutocompletionService requests captured partial")
+        lines.append("address keystrokes before the user selected a final suggestion.")
+        lines.append("Each entry below represents the typed query at that moment.")
+        lines.append("")
+        for ks in maps_ks:
+            har_lbl = f"HAR #{ks['entry_index'] + 1}"   # 1-based for display
+            ts_short = ks.get('timestamp', '')[:23]
+            status   = ks.get('status', 0)
+            typed    = ks.get('query', '')
+            lines.append(f"  [{ts_short}] {har_lbl}  typed='{typed}'  HTTP:{status}")
+        if len(maps_ks) >= 2:
+            first_q = maps_ks[0]['query']
+            last_q  = maps_ks[-1]['query']
+            lines.append("")
+            lines.append(f"  Reconstruction: '{first_q}' → '{last_q}'")
+            lines.append(f"  Captures {len(maps_ks)} intermediate address states before user selection.")
+            lines.append("  Legal significance: Each request reveals in-progress user input to")
+            lines.append("  Google's servers before submission — potential §631(a) interception")
+            lines.append("  of communication contents as typed (not just final submitted value).")
         lines.append("")
 
     # ── Session replay / behavioral vendors ─────────────────────────────────
@@ -1696,6 +2142,51 @@ def build_litigation_extract(results, risk):
     lines.append("LeadID/Jornaya detected: " + ("YES" if results.get('leadid_detected') else "NO"))
     lines.append(f"Total requests in session: {results.get('total_requests', 0)}")
 
+    # ── Vendor PII concentration note ────────────────────────────────────────
+    # When all confirmed PII lands on a single vendor, add an explanatory note
+    # so the litigation package proactively addresses the concentration rather
+    # than leaving it for opposing counsel to challenge.
+    vendors_with_confirmed_pii = [
+        vdata['name']
+        for vdata in vendors.values()
+        if len(vdata.get('pii', [])) > 0
+    ]
+    vendors_without_pii = [
+        vdata['name']
+        for vdata in vendors.values()
+        if len(vdata.get('pii', [])) == 0 and vdata.get('request_count', 0) > 0
+    ]
+    if len(vendors_with_confirmed_pii) == 1 and vendors_without_pii:
+        lines.append("")
+        lines.append("=" * 60)
+        lines.append("VENDOR PII CONCENTRATION NOTE")
+        lines.append("=" * 60)
+        lines.append(
+            f"All {len([p for v in vendors.values() for p in v.get('pii', [])])} "
+            f"confirmed PII transmission(s) in this session are attributable to "
+            f"{vendors_with_confirmed_pii[0]}."
+        )
+        lines.append("")
+        lines.append("The following vendors were also detected but no PII was confirmed")
+        lines.append("in their network payloads during this session:")
+        for vname in vendors_without_pii:
+            vdata = next(v for v in vendors.values() if v['name'] == vname)
+            n_opaque = vdata.get('binary_undecipherable', 0)
+            caveat = (
+                f" ({n_opaque} POST(s) used binary encoding — contents unverifiable)"
+                if n_opaque > 0 else
+                " (payloads analysed — no PII fields detected)"
+            )
+            lines.append(f"  • {vname}{caveat}")
+        lines.append("")
+        lines.append(
+            "This concentration is consistent with a session in which the user's "
+            "contact information was entered only in the form monitored by "
+            f"{vendors_with_confirmed_pii[0]}. It does not rule out PII transmission "
+            "by other vendors in undecodable or server-side payloads. This note should "
+            "be addressed in the litigation package to pre-empt a cherry-picking argument."
+        )
+
     return '\n'.join(lines)
 
 
@@ -1746,6 +2237,9 @@ def save_single_analysis(filename, results, risk, litigation_extract=None):
             'litigation_extract':    litigation_extract,
             'has_report':            False,
             'report_id':             None,
+            # Full results dict stored for litigation extract rebuild
+            'results_json':          results,
+            'risk_json':             risk,
         }
 
         _col_single.insert_one(doc)
@@ -1898,6 +2392,14 @@ required in every output:
   10. Final Contamination Check Table
 Every damages entry must cite an exact original HAR ID.
 The contamination check table is mandatory in every output.
+
+If the HAR analysis data contains a "VENDOR PII CONCENTRATION NOTE" section,
+you MUST reproduce it verbatim as a clearly labelled section in your output,
+immediately after the Damages Analysis. Do not paraphrase or omit it.
+
+If the HAR analysis data contains a "NOTE — BINARY-ENCODED PAYLOADS" section,
+you MUST reproduce it verbatim as a clearly labelled section in your output,
+immediately after the Third-Party PII Transmissions section. Do not omit it.
 ============================================================="""
 
 # Available models — updated via /api/admin/models/refresh
@@ -1940,6 +2442,17 @@ def get_admin_settings():
         'model_list':              DEFAULT_MODEL_LIST,
         'models_refreshed_at':     None,
         'spend_warning_threshold': 5.00,   # $ per 30 days
+        # Fix 5: Known-value test profile — PII values used in the test session.
+        # When set, ANY appearance of these values in vendor requests is flagged
+        # even if the field name is not recognized.
+        'test_profile': {
+            'email':     '',
+            'phone':     '',
+            'firstName': '',
+            'lastName':  '',
+            'zip':       '',
+            'address':   '',
+        },
     }
     if not MONGO_ENABLED:
         return defaults
@@ -1980,7 +2493,8 @@ def api_admin_settings_post():
         return jsonify({'error': 'Database not available', 'saved': False}), 503
 
     data = request.get_json(silent=True) or {}
-    allowed = {'system_prompt', 'blank_template', 'sample_reference', 'default_model', 'spend_warning_threshold'}
+    allowed = {'system_prompt', 'blank_template', 'sample_reference', 'default_model',
+               'spend_warning_threshold', 'test_profile'}
     update  = {k: v for k, v in data.items() if k in allowed}
 
     if not update:
@@ -2757,6 +3271,29 @@ def api_delete_single(analysis_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/history/single/<analysis_id>/clear-extract', methods=['POST'])
+def api_clear_extract(analysis_id):
+    """
+    Clear the stored litigation_extract and results_json for a single analysis.
+    Forces a full rebuild the next time a report is generated via force_rebuild_extract,
+    or when the user re-uploads and re-scans the HAR.
+    """
+    if not MONGO_ENABLED:
+        return jsonify({'error': 'Database not available'}), 503
+    try:
+        result = _col_single.update_one(
+            {'analysis_id': analysis_id},
+            {'$set': {'litigation_extract': None, 'results_json': None, 'risk_json': None, 'has_report': False}}
+        )
+        if result.matched_count == 0:
+            return jsonify({'error': 'Analysis not found'}), 404
+        print(f"↺  Extract cleared for analysis: {analysis_id}")
+        return jsonify({'cleared': True, 'analysis_id': analysis_id})
+    except Exception as e:
+        print(f"⚠️  MongoDB clear-extract failed: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/history/bulk/<session_id>', methods=['DELETE'])
 def api_delete_bulk(session_id):
     """Delete a bulk ranking session from MongoDB."""
@@ -2868,9 +3405,21 @@ def analyze():
         except Exception as e:
             return jsonify({'error': f'Error reading file: {str(e)}'}), 400
         
+        # Fix 5: Populate known-value test profile before analysis so that
+        # _known_value_scan can catch PII in obfuscated/unknown field names.
+        import backend as _self_mod
+        _admin_settings = get_admin_settings()
+        _tp = _admin_settings.get('test_profile', {})
+        _self_mod._KNOWN_TEST_VALUES = {
+            k: v.strip() for k, v in _tp.items() if v and str(v).strip()
+        }
+
         # Analyze the HAR data (whether from standard or resilient parsing)
         results = analyze_har_simple(har_data)
-        
+
+        # Clear test profile after analysis (don't leak between requests)
+        _self_mod._KNOWN_TEST_VALUES = {}
+
         # Add repair information to results
         if repair_used:
             results['repair_used'] = True
@@ -3243,7 +3792,15 @@ def analyze_bulk():
 
             # --- Analyze ---
             try:
+                # Fix 5: Populate known-value test profile before analysis
+                import backend as _self_mod2
+                _tp2 = get_admin_settings().get('test_profile', {})
+                _self_mod2._KNOWN_TEST_VALUES = {k: v.strip() for k, v in _tp2.items() if v and str(v).strip()}
+
                 results = analyze_har_simple(har_data)  # dels har_data internally (Option D)
+
+                # Clear after analysis
+                _self_mod2._KNOWN_TEST_VALUES = {}
 
                 # Plaintext supplement for repaired/corrupted files.
                 # Temp file is still on disk — re-read the cleaned text from it,
@@ -3369,15 +3926,35 @@ def api_generate_report(analysis_id):
     if not MONGO_ENABLED:
         return jsonify({'error': 'Database not available'}), 503
 
-    data       = request.get_json(silent=True) or {}
-    model      = data.get('model') or get_admin_settings().get('default_model', DEFAULT_MODEL)
-    out_format = data.get('format', 'html').lower()
+    data                 = request.get_json(silent=True) or {}
+    model                = data.get('model') or get_admin_settings().get('default_model', DEFAULT_MODEL)
+    out_format           = data.get('format', 'html').lower()
+    force_rebuild_extract = data.get('force_rebuild_extract', False)
     if out_format not in ('html', 'docx'):
         out_format = 'html'
 
     doc = _col_single.find_one({'analysis_id': analysis_id}, {'_id': 0})
     if not doc:
         return jsonify({'error': 'Analysis not found'}), 404
+
+    # If force_rebuild_extract is set, re-run build_litigation_extract from stored
+    # results and update MongoDB before generating — ensures latest code is used.
+    if force_rebuild_extract:
+        stored_results = doc.get('results_json')
+        stored_risk    = doc.get('risk_json')
+        if stored_results and stored_risk:
+            try:
+                rebuilt_extract = build_litigation_extract(stored_results, stored_risk)
+                _col_single.update_one(
+                    {'analysis_id': analysis_id},
+                    {'$set': {'litigation_extract': rebuilt_extract}}
+                )
+                doc['litigation_extract'] = rebuilt_extract
+                print(f"✅ Litigation extract rebuilt for {analysis_id}")
+            except Exception as ex:
+                print(f"⚠️  Rebuild failed, using stored extract: {ex}")
+        else:
+            print(f"⚠️  force_rebuild_extract: no stored results_json for {analysis_id}, using stored extract")
 
     extract = doc.get('litigation_extract')
     if not extract:

@@ -704,6 +704,27 @@
             border-radius: 3px;
         }
 
+        /* ── CLEAR EXTRACT BUTTON ───────────────────────────────── */
+        .clear-extract-btn {
+            background: rgba(124,111,247,0.1);
+            border: 1px solid rgba(124,111,247,0.35);
+            color: #7c6ff7;
+            cursor: pointer;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 0.85em;
+            transition: all 0.15s;
+            flex-shrink: 0;
+            white-space: nowrap;
+            line-height: 1;
+            margin-right: 6px;
+        }
+        .clear-extract-btn:hover {
+            background: rgba(124,111,247,0.22);
+            border-color: rgba(124,111,247,0.6);
+        }
+        .clear-extract-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
         /* ── DELETE BUTTON ──────────────────────────────────────── */
         .delete-btn {
             background: rgba(224,92,92,0.1);
@@ -1015,6 +1036,9 @@
                         <button class="delete-confirm-yes" onclick="event.stopPropagation(); confirmDeleteSingle('${r.analysis_id}')">Delete</button>
                         <button class="delete-confirm-no"  onclick="event.stopPropagation(); cancelDelete('${r.analysis_id}', 'single')">Cancel</button>
                     </div>
+                    <button class="clear-extract-btn" id="clear-btn-${r.analysis_id}"
+                            onclick="event.stopPropagation(); clearExtract('${r.analysis_id}')"
+                            title="Clear stored extract so next generation rebuilds from latest code">↺ Clear Extract</button>
                     <button class="delete-btn" id="del-btn-${r.analysis_id}"
                             onclick="event.stopPropagation(); showDeleteConfirm('${r.analysis_id}', 'single')"
                             title="Delete this result">🗑</button>
@@ -1257,6 +1281,23 @@
         const btn     = document.getElementById(`del-btn-${id}`);
         if (confirm) confirm.classList.remove('visible');
         if (btn)     btn.style.opacity = '';
+    }
+
+    async function clearExtract(analysisId) {
+        const btn = document.getElementById(`clear-btn-${analysisId}`);
+        if (btn) { btn.disabled = true; btn.textContent = '↺ Clearing…'; }
+        try {
+            const res = await fetch(`/api/history/single/${analysisId}/clear-extract`, { method: 'POST' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            if (btn) { btn.textContent = '✓ Cleared'; btn.style.color = '#5cb85c'; }
+            // Update local data so the "Report Generated" tag disappears
+            const rec = allSingle.find(r => r.analysis_id === analysisId);
+            if (rec) { rec.has_report = false; }
+            setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = '↺ Clear Extract'; btn.style.color = ''; } }, 2000);
+        } catch (err) {
+            if (btn) { btn.disabled = false; btn.textContent = '↺ Clear Extract'; }
+            alert(`Could not clear extract: ${err.message}`);
+        }
     }
 
     async function confirmDeleteSingle(analysisId) {
