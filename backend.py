@@ -485,17 +485,22 @@ def extract_pii_from_params(params):
         key_lower = key.lower()
         key_leaf  = key_lower.rsplit('.', 1)[-1].strip('[]0123456789')
 
+        # PRIORITY 0: Check for hashed PII BEFORE the exclude filter.
+        # Hash patterns (40-char SHA-1, 32-char MD5, 64-char SHA-256) are always
+        # PII-relevant regardless of field name. The exclude filter uses substrings
+        # like 'ts' that accidentally match 'fingerprints', 'id' that matches
+        # 'uid', etc., so we must detect hashes first to avoid silently dropping
+        # TrustedForm /fingerprints entries and similar.
+        hash_pii = detect_hash_pattern(key, val_str)
+        if hash_pii:
+            pii.append(hash_pii)
+            continue  # Hash detected, move to next param
+
         # Check if this is a tracking field we should skip
         # (check both the full key and the leaf to avoid false exclusions)
         if any(exclude in key_lower for exclude in exclude_patterns) and \
            any(exclude in key_leaf  for exclude in exclude_patterns):
             continue
-        
-        # PRIORITY 1: Check for hashed PII (SHA-256, SHA-1, MD5)
-        hash_pii = detect_hash_pattern(key, val_str)
-        if hash_pii:
-            pii.append(hash_pii)
-            continue  # Hash detected, move to next param
         
         # PRIORITY 2: Try to decode base64 if present
         decoded = decode_base64_if_present(val_str)
@@ -542,8 +547,12 @@ def extract_pii_from_params(params):
                 elif label == 'Phone':
                     # Validate phone: must be 10 digits, no dots or 'fb' prefix
                     clean = re.sub(r'[^\d]', '', val_str)
-                    # Fix 3: Reject Unix timestamps >= 1,500,000,000
-                    is_ts = len(clean) == 10 and int(clean) >= 1_500_000_000
+                    # Reject Unix timestamps: modern epoch values start with 15/16/17.
+                    # US/CA phone NPAs cannot start with 0 or 1, so 10-digit numbers
+                    # beginning with 1[5-7] and ≥ 1.5 B are timestamps, not phones.
+                    is_ts = (len(clean) == 10 and
+                             clean[:2] in ('15', '16', '17') and
+                             int(clean) >= 1_500_000_000)
                     if len(clean) == 10 and not any(c in val_str.lower() for c in ['fb', 'ga', '.']) and not is_ts:
                         pii.append({
                             'type': label,
@@ -716,8 +725,19 @@ def extract_pii_from_json(data, prefix=''):
     elif isinstance(data, list):
         for i, item in enumerate(data):
             current_key = f"{prefix}[{i}]"
-            pii.extend(extract_pii_from_json(item, current_key))
-    
+            if isinstance(item, (dict, list)):
+                pii.extend(extract_pii_from_json(item, current_key))
+            else:
+                # Scalar list item (string, number) — treat as param directly
+                params = {current_key: item}
+                pii.extend(extract_pii_from_params(params))
+
+    elif data is not None and not isinstance(data, (dict, list)):
+        # Top-level scalar (shouldn't normally happen but handle gracefully)
+        params = {prefix: data} if prefix else {}
+        if params:
+            pii.extend(extract_pii_from_params(params))
+
     return pii
 
 def _parse_multipart_body(text, mime_type):
@@ -876,12 +896,153 @@ def _known_value_scan(text, source_label=''):
     return found
 
 
+def _decode_trustedform_event_body(json_outer):
+    """
+    TrustedForm /event POST bodies use the format:
+        {"body": "<base64(zlib(dom_mutation_array))>"}
+
+    The inner payload is a JSON array of DOM mutation records. Each mutation
+    can carry node attribute changes — including 'value' changes on form inputs
+    — which reveal PII typed by the user character-by-character.
+
+    This function decompresses and parses the payload, then searches for
+    input-value progressions and textual strings matching known PII patterns.
+
+    Returns a list of PII dicts compatible with extract_pii_from_json output.
+    """
+    import zlib as _zlib
+    pii = []
+    try:
+        b64_body = json_outer.get('body', '')
+        if not b64_body:
+            return pii
+        # base64 decode (add padding defensively)
+        raw = base64.b64decode(b64_body + '==')
+        # zlib decompress
+        text = _zlib.decompress(raw).decode('utf-8', errors='replace')
+        mutations = json.loads(text)
+    except Exception:
+        return pii  # payload unreadable — skip silently
+
+    # TrustedForm event records are arrays: [timestamp_ms, event_type, ...]
+    #
+    # Relevant event types for PII extraction:
+    #   "k"  — keystroke accumulation: [ts, "k", node_id, accumulated_value]
+    #          Each "k" record carries the full input value accumulated so far.
+    #          Successive "k" records for the same node show character-by-character
+    #          typing (e.g. "j" → "ja" → "jan" → "jane").
+    #   "i"  — input event: same structure as "k", used in some TrustedForm versions.
+    #   "d"  — DOM mutation: [ts, "d", {"ac": [{id, "a", "v"}, ...]}]
+    #          Attribute changes. In some TF versions, 'value' attribute changes here.
+    #          In others (Angular/React apps) the value is only in "k" records.
+    #
+    # We collect all "k"/"i" records and the last (longest) value per node,
+    # then also scan DOM "d" mutations for explicit 'value' attribute changes.
+    input_values_by_node = {}  # node_id → list of accumulated string values
+
+    for record in mutations:
+        if not isinstance(record, list) or len(record) < 3:
+            continue
+        event_type = record[1]
+
+        # Keystroke accumulation events
+        if event_type in ('k', 'i') and len(record) >= 4:
+            node_id = record[2]
+            val     = record[3]
+            if isinstance(val, str) and val:
+                if node_id not in input_values_by_node:
+                    input_values_by_node[node_id] = []
+                input_values_by_node[node_id].append(val)
+
+        # DOM mutation events — look for explicit 'value' attribute changes
+        elif event_type == 'd':
+            payload = record[2]
+            if not isinstance(payload, dict):
+                continue
+            for change in payload.get('ac', []):
+                if not isinstance(change, dict):
+                    continue
+                attr = change.get('a', '')
+                val  = change.get('v', '')
+                node = change.get('id')
+                if attr == 'value' and isinstance(val, str) and val:
+                    if node not in input_values_by_node:
+                        input_values_by_node[node] = []
+                    input_values_by_node[node].append(val)
+
+    # For each node, take the longest accumulated value (most-complete entry).
+    # Shorter intermediates are keystroke-by-keystroke captures — still legally
+    # significant as proof of interception, but we surface the final value for
+    # PII detection and let Claude describe the progression in context.
+    for node_id, vals in input_values_by_node.items():
+        final_val = max(vals, key=len)
+        if len(final_val) < 2:
+            continue
+        # Run the final value through normal PII extraction by injecting it as
+        # a synthetic parameter.  Use the node id as the field key so
+        # detect_hash_pattern and extract_pii_from_params can classify it.
+        synthetic_params = {f'input_node_{node_id}': [final_val]}
+        found = extract_pii_from_params(synthetic_params)
+        if found:
+            for item in found:
+                item['note'] = (item.get('note', '') +
+                                f' [TrustedForm keystroke capture, node {node_id}, '
+                                f'{len(vals)} event(s), final value={final_val!r}]').strip()
+            pii.extend(found)
+        else:
+            # Not classified by field name — run known-value scan if enabled
+            if _KNOWN_TEST_VALUES:
+                matches = _known_value_scan(final_val, f'TrustedForm DOM node {node_id}')
+                pii.extend(matches)
+            # Explicit phone detection: 10 digits after stripping formatting
+            import re as _re
+            digits_only = _re.sub(r'[^\d]', '', final_val)
+            # Distinguish phone numbers from Unix timestamps.
+            # Real Unix timestamps (seconds) in the modern era start with 15, 16, or 17
+            # (years 2017–2073). US/CA phone NPAs cannot start with 0 or 1.
+            # So: 10-digit strings starting with 1[5-7] are almost certainly timestamps;
+            # those starting with 2-9 are almost certainly phone numbers.
+            is_ts = (len(digits_only) == 10 and
+                     digits_only[:2] in ('15', '16', '17') and
+                     int(digits_only) >= 1_500_000_000)
+            if len(digits_only) == 10 and not is_ts:
+                pii.append({
+                    'type':  'Phone (TrustedForm keystroke)',
+                    'field': f'input_node_{node_id}',
+                    'value': final_val,
+                    'note':  (f'TrustedForm captured {len(vals)} keystroke event(s) '
+                              f'on DOM node {node_id} — phone progression. '
+                              f'Progression: {" → ".join(vals[:5])}'
+                              + (' ...' if len(vals) > 5 else '')),
+                })
+            # Regardless: if the value looks like plausible PII (contains letters,
+            # is not a pure number or class string), record it as a generic
+            # DOM keystroke capture so Claude can include it in the timeline.
+            elif (len(final_val) >= 2 and
+                    not final_val.startswith('mat-') and
+                    not final_val.startswith('ng-') and
+                    any(c.isalpha() for c in final_val)):
+                pii.append({
+                    'type':  'DOM Keystroke Capture (TrustedForm)',
+                    'field': f'input_node_{node_id}',
+                    'value': final_val,
+                    'note':  (f'TrustedForm captured {len(vals)} keystroke event(s) '
+                              f'on DOM node {node_id}. '
+                              f'Progression: {" → ".join(vals[:5])}'
+                              + (' ...' if len(vals) > 5 else '')),
+                })
+
+    return pii
+
+
 def extract_pii_from_request(entry):
     """
     Extract plaintext PII from POST body and query params.
 
-    Handles four body formats:
+    Handles five body formats:
       1. JSON body  (application/json or text starting with { / [)
+         1a. TrustedForm /event — {"body":"<base64(zlib(dom_mutations))>"} —
+             decompressed and searched for input-value DOM attribute changes
       2. URL-encoded body (application/x-www-form-urlencoded)
       3. Multipart body (multipart/form-data) — used by LeadID InitFormData /
          SaveFormField; also decodes the 'formdata' JSON-array sub-field
@@ -899,6 +1060,20 @@ def extract_pii_from_request(entry):
             try:
                 data = json.loads(text)
                 pii.extend(extract_pii_from_json(data))
+
+                # 1a. TrustedForm /event — {"body":"<base64(zlib(dom_mutations))>"}
+                # The outer JSON has a single 'body' key whose value is a
+                # base64-encoded, zlib-compressed array of DOM mutation records.
+                # Standard JSON extraction misses all PII inside the compressed blob.
+                url = entry.get('request', {}).get('url', '')
+                if (isinstance(data, dict) and 'body' in data and
+                        'trustedform.com' in url.lower() and '/event' in url.lower()):
+                    tf_pii = _decode_trustedform_event_body(data)
+                    existing_vals = {p['value'] for p in pii}
+                    for p in tf_pii:
+                        if p['value'] not in existing_vals:
+                            pii.append(p)
+                            existing_vals.add(p['value'])
             except Exception:
                 pass
 
@@ -1783,7 +1958,7 @@ def build_litigation_extract(results, risk):
       - Full vendor timeline with timestamps, HAR indices, PII values
       - First-party PII collected
       - Identifier propagation across vendors
-      - Damages (conservative / hybrid / aggressive)
+      - Damages (per-vendor / per-statute: CIPA § 637.2 / § 638.51)
     """
     vendors      = results.get('vendors', {})
     domain       = results.get('first_party', 'Unknown')
@@ -1930,9 +2105,27 @@ def build_litigation_extract(results, risk):
             hashlib.sha1(encoded).hexdigest(),
             hashlib.md5(encoded).hexdigest(),
         }
-        # Email: lowercase normalisation
+        # Email: lowercase normalisation + keystroke progressions.
+        # TrustedForm fingerprints SHA-1 each intermediate email value as the
+        # user types character by character (e.g. 'j', 'ja', 'jan', ...,
+        # 'janedoe@yahoo.com'). We hash all prefix progressions from length 1
+        # up to the full value so that partial-progression hashes are verified.
         email_norm = plaintext.strip().lower()
-        if email_norm != plaintext:
+        if '@' in email_norm:
+            # Hash all progressions of the lowercase email
+            for length in range(1, len(email_norm) + 1):
+                prog = email_norm[:length]
+                enc_prog = prog.encode('utf-8')
+                hashes.add(hashlib.sha1(enc_prog).hexdigest())
+            # Also hash the original-case full value and standard normalizations
+            if email_norm != plaintext:
+                enc_norm = email_norm.encode('utf-8')
+                hashes.update({
+                    hashlib.sha256(enc_norm).hexdigest(),
+                    hashlib.sha1(enc_norm).hexdigest(),
+                    hashlib.md5(enc_norm).hexdigest(),
+                })
+        elif email_norm != plaintext:
             enc_norm = email_norm.encode('utf-8')
             hashes.update({
                 hashlib.sha256(enc_norm).hexdigest(),
@@ -1952,10 +2145,30 @@ def build_litigation_extract(results, risk):
         return hashes
 
     # Build a map: hash_value → (plaintext_value, plaintext_type)
+    # Seed from first-party form submissions first, then supplement with
+    # plaintext values captured directly by TrustedForm DOM keystroke events
+    # (Phone, Email, DOM Keystroke Capture types) so that SHA-1 fingerprints
+    # can be verified even when first-party form submissions aren't detected.
     verified_hash_map = {}
     for item in fp_items:
         for h in _hashes_of(item.get('value', '')):
             verified_hash_map[h] = (item.get('value', ''), item.get('type', ''))
+
+    # Supplement from TrustedForm keystroke captures (plaintext PII)
+    _tf_plaintext_types = {
+        'Email', 'Phone', 'Phone (TrustedForm keystroke)',
+        'DOM Keystroke Capture (TrustedForm)', 'Name',
+        'First Name', 'Last Name', 'Street Address', 'City',
+    }
+    for vdata in vendors.values():
+        for pii_item in vdata.get('pii', []):
+            ptype = pii_item.get('type', '')
+            if ptype in _tf_plaintext_types and not ptype.startswith('Hashed'):
+                val = pii_item.get('value', '')
+                if val and len(val) >= 2:
+                    for h in _hashes_of(val):
+                        if h not in verified_hash_map:  # don't override fp_items
+                            verified_hash_map[h] = (val, ptype)
 
     lines.append("=" * 60)
     lines.append("THIRD-PARTY PII TRANSMISSIONS (deduplicated, with original HAR IDs)")
@@ -1997,8 +2210,16 @@ def build_litigation_extract(results, risk):
             har_idx  = pii.get('har_index')
             full_url = pii.get('request_details', {}).get('full_url', pii.get('url', ''))
 
-            # Strip truncation marker and use full hash value
+            # Recover full hash value.
+            # PII items store truncated display values (value[:16] + '...')
+            # but the full hash is preserved in the 'note' field as
+            # "Full hash: <hex>..." — extract it for verified-hash lookup.
             full_hash_val = pval.rstrip('.')
+            note = pii.get('note', '')
+            if note:
+                m = re.search(r'Full hash:\s*([a-f0-9]{32,64})', note, re.IGNORECASE)
+                if m:
+                    full_hash_val = m.group(1)
 
             # Verify hash against first-party values
             is_hash = ptype.startswith('Hashed')
@@ -2121,23 +2342,38 @@ def build_litigation_extract(results, risk):
 
     # ── Damages ───────────────────────────────────────────────────────────────
     lines.append("=" * 60)
-    lines.append("DAMAGES ANALYSIS")
+    lines.append("DAMAGES ANALYSIS (Single Plaintiff / Single Session)")
     lines.append("=" * 60)
     bk = risk.get('breakdown', {})
     lines.append(f"Score breakdown: Plaintext={bk.get('plaintext',0)} | "
                  f"Hashed={bk.get('hashed',0)} | Damages={bk.get('damages',0)} | "
                  f"Vendors={bk.get('vendors',0)} | Aggravating={bk.get('aggravating',0)}")
+    lines.append("")
 
-    # Damages tiers (using score-based estimates)
-    score = risk['score']
-    base  = risk['estimated_damages']
-    conservative_val = base
-    hybrid_val       = min(base * 4,  500000)
-    aggressive_val   = min(base * 10, 1000000)
+    # Per-statute, per-vendor breakdown
+    dd = risk.get('damages_detail', {})
+    wt_vendors = dd.get('wiretap_vendors', [])
+    pr_vendors  = dd.get('pen_reg_vendors', [])
+    wt_dmg      = dd.get('wiretap_damages', 0)
+    pr_dmg      = dd.get('pen_reg_damages', 0)
+    total_dmg   = risk.get('estimated_damages', 0)
 
-    lines.append(f"  Conservative: ${conservative_val:,}")
-    lines.append(f"  Hybrid:       ${hybrid_val:,}")
-    lines.append(f"  Aggressive:   ${aggressive_val:,}")
+    lines.append("Statutory damages basis:")
+    if wt_vendors:
+        lines.append(f"  CIPA § 637.2 (Wiretapping — real-time interception): "
+                     f"${wt_dmg:,}  [{len(wt_vendors)} vendor(s) × $5,000]")
+        for vn in wt_vendors:
+            lines.append(f"    • {vn}")
+    if pr_vendors:
+        lines.append(f"  CIPA § 638.51 (Pen Register — tracking pixel/beacon): "
+                     f"${pr_dmg:,}  [{len(pr_vendors)} vendor(s) × $2,500]")
+        for vn in pr_vendors:
+            lines.append(f"    • {vn}")
+    if not wt_vendors and not pr_vendors:
+        lines.append("  No qualifying vendors identified for statutory damages.")
+
+    lines.append(f"\n  TOTAL ESTIMATED DAMAGES (single plaintiff): ${total_dmg:,}")
+    lines.append("  Note: Damages are per-vendor per-session under CIPA, not per data field.")
     lines.append("")
     lines.append("LeadID/Jornaya detected: " + ("YES" if results.get('leadid_detected') else "NO"))
     lines.append(f"Total requests in session: {results.get('total_requests', 0)}")
@@ -2343,7 +2579,7 @@ Produce all 7 sections in order:
 4. Vendor-by-Vendor Data Classification Matrix (tabular)
 5. Identifier Propagation Map (tabular)
 6. Partial-to-Full Value Reconstruction (tabular)
-7. Damages Analysis (conservative / hybrid / aggressive, tabular with HAR IDs)
+7. Damages Analysis (per-vendor / per-statute, tabular with HAR IDs)
 
 Format output as clean Markdown with proper table syntax.
 
@@ -2354,6 +2590,26 @@ derived from the provided data. If you are running long, reduce detail in earlie
 rather than omitting later ones. The Damages Analysis (section 7) is essential and must
 always be included.
 
+CRITICAL RULE — DAMAGES MODEL (MANDATORY — NO EXCEPTIONS):
+CIPA statutory damages are computed per-vendor per-session for ONE plaintiff.
+Each vendor counts ONCE regardless of how many fields, transmissions, or hashes it received.
+
+Rates:
+  - CIPA § 637.2 (Wiretapping — real-time form interception, e.g. TrustedForm/LeadID): $5,000 per vendor
+  - CIPA § 638.51 (Pen Register — tracking pixels, session replay, behavioral beacons): $2,500 per vendor
+
+OUTPUT REQUIREMENT — DAMAGES SECTION:
+You MUST produce exactly ONE damages table. DO NOT produce conservative / hybrid / aggressive
+tiers. DO NOT count per-field, per-transmission, or per-hash. DO NOT create sub-sections or
+counting approaches. The analysis extract under "Statutory damages basis:" already has the
+correct vendor list and totals — reproduce those exactly in one table with columns:
+Vendor | Statute | HAR ID (representative) | Rate | Amount
+
+End the section with a single total and the note:
+"Damages are per-vendor per-session for a single plaintiff under CIPA, not per data field or transmission."
+
+Any output that presents multiple damage tier totals or per-field counting violates this instruction.
+
 CRITICAL RULE — HASH VERIFICATION:
 The analysis data marks each hashed PII value as either:
   - "VERIFIED: matches first-party [type] value" — cryptographic match confirmed
@@ -2363,7 +2619,7 @@ You MUST follow these rules strictly:
 - Only assert that a hash corresponds to a specific plaintext value if it is marked VERIFIED
 - If a hash is marked UNVERIFIED, state only that a hashed value was transmitted — do not claim to know what plaintext it represents
 - Never infer or assume a hash-to-plaintext linkage based on proximity of data points alone
-- In the damages analysis, unverified hashes may still be counted as violations but must be described accurately as "unverified hashed transmission" not as a confirmed disclosure of a specific value"""
+- In the damages analysis, unverified hashes inform which statute applies but do not add additional vendors or multiply the per-vendor rate"""
 
 DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
 
@@ -2386,11 +2642,14 @@ required in every output:
   4. Vendor-by-Vendor Data Classification Matrix
   5. Identifier Propagation Map
   6. Partial-to-Full Value Reconstruction
-  7. Damages Analysis (conservative / hybrid / aggressive)
+  7. Damages Analysis (per-vendor / per-statute)
   8. Cookie Blocking Analysis
   9. Third-Party ID Sharing / Cookie Sync Table
   10. Final Contamination Check Table
-Every damages entry must cite an exact original HAR ID.
+The Damages Analysis (section 7) MUST contain exactly ONE table listing each vendor once,
+with its applicable statute, a representative HAR ID, per-vendor rate, and amount.
+DO NOT produce conservative / hybrid / aggressive tiers. Each vendor counts once.
+Total must match the "TOTAL ESTIMATED DAMAGES" figure in the analysis extract.
 The contamination check table is mandatory in every output.
 
 If the HAR analysis data contains a "VENDOR PII CONCENTRATION NOTE" section,
@@ -3407,9 +3666,20 @@ def analyze():
         
         # Fix 5: Populate known-value test profile before analysis so that
         # _known_value_scan can catch PII in obfuscated/unknown field names.
+        # Per-request profile fields (submitted via the UI) take priority over
+        # the admin-configured test profile; any supplied field overrides its
+        # corresponding admin value.
         import backend as _self_mod
         _admin_settings = get_admin_settings()
-        _tp = _admin_settings.get('test_profile', {})
+        _tp = dict(_admin_settings.get('test_profile', {}))  # copy — don't mutate admin settings
+
+        # Profile fields submitted with this specific request (prefix: profile_)
+        _PROFILE_KEYS = ('firstName', 'lastName', 'email', 'phone', 'address', 'zip')
+        for _pkey in _PROFILE_KEYS:
+            _form_val = request.form.get(f'profile_{_pkey}', '').strip()
+            if _form_val:
+                _tp[_pkey] = _form_val  # per-request value overrides admin default
+
         _self_mod._KNOWN_TEST_VALUES = {
             k: v.strip() for k, v in _tp.items() if v and str(v).strip()
         }
@@ -3490,6 +3760,12 @@ def analyze():
         # Surface whether Claude is available so frontend can show/hide generate button
         results['claude_enabled'] = CLAUDE_ENABLED
 
+        # Merge risk score fields into response so frontend can display damages summary
+        results['risk_score']        = risk.get('score', 0)
+        results['risk_level']        = risk.get('grade_label', 'Unknown')
+        results['estimated_damages'] = risk.get('estimated_damages', 0)
+        results['damages_detail']    = risk.get('damages_detail', {})
+
         return jsonify(results)
     
     except Exception as e:
@@ -3533,9 +3809,8 @@ def compute_risk_score(results):
     vendors = results.get('vendors', {})
 
     # --- Deduplicate by type+value to avoid counting repeated requests ---
-    seen_plain, seen_hashed, seen_dmg = set(), set(), set()
+    seen_plain, seen_hashed = set(), set()
     plaintext_pii_items, hashed_pii_items = [], []
-    total_damages = 0
 
     for v in vendors.values():
         for p in v.get('pii', []):
@@ -3549,9 +3824,62 @@ def compute_risk_score(results):
                 if key not in seen_plain:
                     seen_plain.add(key)
                     plaintext_pii_items.append(p)
-            if key not in seen_dmg:
-                seen_dmg.add(key)
-                total_damages += p.get('legal_context', {}).get('estimated_damages', 0)
+
+    # --- Damages: per-vendor, per-statute (single plaintiff/session model) ---
+    # CIPA § 637.2  — wiretapping (real-time interception by lead capture vendors
+    #                 like TrustedForm/LeadID): $5,000 per vendor per session.
+    # CIPA § 638.51 — pen register (tracking pixels / beacons firing without
+    #                 consent): $2,500 per vendor per session.
+    #
+    # Vendors are bucketed by their type; lead-capture vendors trigger the higher
+    # wiretapping claim, all others trigger the pen-register claim.
+    # Only vendors that actually received PII (or fired tracking pixels) count.
+
+    WIRETAP_TYPES   = {'lead_capture'}          # § 637.2 — $5,000 / vendor
+    PEN_REG_TYPES   = {                          # § 638.51 — $2,500 / vendor
+        'session_replay', 'behavioral_tracking', 'analytics_replay',
+        'call_tracking', 'ctv_attribution', 'analytics', 'advertising',
+        'social_pixel', 'marketing_automation',
+    }
+
+    wiretap_vendors  = []   # vendors triggering § 637.2
+    pen_reg_vendors  = []   # vendors triggering § 638.51
+    seen_vnames      = set()
+
+    for vname, vdata in vendors.items():
+        if vname in seen_vnames:
+            continue
+        has_pii      = vdata.get('pii_count', 0) > 0
+        request_count = vdata.get('request_count', 0)
+        vtype        = vdata.get('vendor_type', '')
+
+        # Wiretap: lead-capture vendors that captured PII
+        if vtype in WIRETAP_TYPES and has_pii:
+            wiretap_vendors.append(vname)
+            seen_vnames.add(vname)
+        # Pen register: tracking/analytics vendors that fired any request
+        elif vtype in PEN_REG_TYPES and request_count > 0:
+            pen_reg_vendors.append(vname)
+            seen_vnames.add(vname)
+        # Fallback: any other vendor that received plaintext PII
+        elif has_pii and vname not in seen_vnames:
+            pen_reg_vendors.append(vname)
+            seen_vnames.add(vname)
+
+    wiretap_dmg  = len(wiretap_vendors)  * 5000   # § 637.2
+    pen_reg_dmg  = len(pen_reg_vendors)  * 2500   # § 638.51
+    total_damages = wiretap_dmg + pen_reg_dmg
+
+    # Store breakdown for downstream use
+    _damages_detail = {
+        'wiretap_vendors':  wiretap_vendors,
+        'pen_reg_vendors':  pen_reg_vendors,
+        'wiretap_damages':  wiretap_dmg,
+        'pen_reg_damages':  pen_reg_dmg,
+        'per_vendor_rate':  {'wiretap': 5000, 'pen_reg': 2500},
+        'statute':          {'wiretap': 'CIPA § 637.2', 'pen_reg': 'CIPA § 638.51'},
+        'basis':            'single plaintiff / single session',
+    }
 
     SESSION_REPLAY_TYPES = {'session_replay', 'behavioral_tracking', 'lead_capture',
                             'call_tracking', 'analytics_replay', 'ctv_attribution'}
@@ -3590,11 +3918,14 @@ def compute_risk_score(results):
         return min(100, 75 + (n - 2) * 10)
 
     def _damage_sub(d):
+        # Single-session scale: max realistic exposure ~$30K
+        # (1 wiretap vendor @ $5K + several pen-reg vendors @ $2.5K each)
         if d == 0:      return 0
-        if d <= 5000:   return 40
-        if d <= 10000:  return 60
-        if d <= 25000:  return 80
-        return min(100, int((d / 40000) * 100))
+        if d <= 2500:   return 35
+        if d <= 5000:   return 55
+        if d <= 10000:  return 75
+        if d <= 20000:  return 90
+        return 100
 
     def _vendor_sub(n):
         if n == 0: return 0
@@ -3648,6 +3979,7 @@ def compute_risk_score(results):
         'grade':             grade,
         'grade_label':       grade_label,
         'estimated_damages': total_damages,
+        'damages_detail':    _damages_detail,
         'top_violations':    top_violations[:3],
         'breakdown': {
             'plaintext': sp,

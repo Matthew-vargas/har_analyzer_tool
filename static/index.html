@@ -47,6 +47,92 @@
             box-shadow: 0 10px 40px rgba(0,0,0,0.2);
             margin-bottom: 30px;
         }
+
+        .profile-section {
+            margin-top: 28px;
+            border-top: 1px solid #e8eaf0;
+            padding-top: 20px;
+        }
+
+        .profile-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            color: #667eea;
+            font-size: 14px;
+            font-weight: 600;
+            user-select: none;
+            width: fit-content;
+        }
+
+        .profile-toggle:hover { color: #764ba2; }
+
+        .profile-toggle-arrow {
+            font-size: 10px;
+            transition: transform 0.2s;
+            display: inline-block;
+        }
+
+        .profile-toggle-arrow.open { transform: rotate(90deg); }
+
+        .profile-fields {
+            display: none;
+            margin-top: 16px;
+        }
+
+        .profile-fields.open { display: block; }
+
+        .profile-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        @media (max-width: 520px) {
+            .profile-grid { grid-template-columns: 1fr; }
+        }
+
+        .profile-field {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .profile-field label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .profile-field input {
+            display: block;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 9px 12px;
+            border: 1.5px solid #dde0f0;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #333;
+            background: #f9faff;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            outline: none;
+        }
+
+        .profile-field input:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102,126,234,0.12);
+            background: #fff;
+        }
+
+        .profile-hint {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #999;
+            line-height: 1.5;
+        }
         
         .drop-zone {
             border: 3px dashed #667eea;
@@ -611,8 +697,61 @@
         }
         
         .legal-damages {
-            color: #dc3545;
+            color: #555;
+            font-weight: 500;
+            font-size: 0.9em;
+        }
+
+        /* ── Top-level damages summary card ── */
+        .damages-summary {
+            margin-top: 20px;
+            padding: 16px 20px;
+            background: #fff8f0;
+            border: 1.5px solid #f0c070;
+            border-radius: 10px;
+        }
+        .damages-summary-title {
+            font-size: 0.85em;
+            font-weight: 700;
+            color: #8a5a00;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-bottom: 6px;
+        }
+        .damages-total {
+            font-size: 2em;
+            font-weight: 800;
+            color: #c0392b;
+            margin-bottom: 12px;
+            line-height: 1;
+        }
+        .damages-line {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-top: 8px;
+            font-size: 0.9em;
+        }
+        .damages-statute {
             font-weight: 600;
+            color: #333;
+        }
+        .damages-amount {
+            font-weight: 700;
+            color: #c0392b;
+        }
+        .damages-vendors {
+            font-size: 0.8em;
+            color: #777;
+            margin: 2px 0 6px 0;
+        }
+        .damages-note {
+            margin-top: 10px;
+            font-size: 0.78em;
+            color: #999;
+            font-style: italic;
+            border-top: 1px solid #e8d5a0;
+            padding-top: 8px;
         }
         
         .expand-btn {
@@ -1172,8 +1311,47 @@
                     ✓ Your data stays private - analyzed locally
                 </div>
             </div>
+
+            <!-- Optional Known PII Profile -->
+            <div class="profile-section">
+                <div class="profile-toggle" onclick="toggleProfile()" id="profileToggle">
+                    <span class="profile-toggle-arrow" id="profileArrow">▶</span>
+                    Optional: Known PII Profile
+                </div>
+                <div class="profile-fields" id="profileFields">
+                    <div class="profile-grid">
+                        <div class="profile-field">
+                            <label for="profileFirstName">First Name</label>
+                            <input type="text" id="profileFirstName" placeholder="e.g. Jane" autocomplete="off">
+                        </div>
+                        <div class="profile-field">
+                            <label for="profileLastName">Last Name</label>
+                            <input type="text" id="profileLastName" placeholder="e.g. Doe" autocomplete="off">
+                        </div>
+                        <div class="profile-field">
+                            <label for="profileEmail">Email</label>
+                            <input type="text" id="profileEmail" placeholder="e.g. jane@example.com" autocomplete="off">
+                        </div>
+                        <div class="profile-field">
+                            <label for="profilePhone">Phone</label>
+                            <input type="text" id="profilePhone" placeholder="e.g. 678-441-0252" autocomplete="off">
+                        </div>
+                        <div class="profile-field">
+                            <label for="profileAddress">Street Address</label>
+                            <input type="text" id="profileAddress" placeholder="e.g. 44 Fantasia Lane" autocomplete="off">
+                        </div>
+                        <div class="profile-field">
+                            <label for="profileZip">ZIP Code</label>
+                            <input type="text" id="profileZip" placeholder="e.g. 30004" autocomplete="off">
+                        </div>
+                    </div>
+                    <p class="profile-hint">
+                        These values seed the PII scanner so it can match obfuscated fields and verify fingerprint hashes. Leave blank to rely on auto-detection only.
+                    </p>
+                </div>
+            </div>
         </div>
-        
+
         <div id="loading" class="loading">
             <div class="spinner"></div>
             <div class="loading-text">Analyzing HAR file...</div>
@@ -1254,10 +1432,32 @@
             uploadFile(file);
         }
         
+        function toggleProfile() {
+            const fields = document.getElementById('profileFields');
+            const arrow = document.getElementById('profileArrow');
+            const isOpen = fields.classList.contains('open');
+            fields.classList.toggle('open', !isOpen);
+            arrow.classList.toggle('open', !isOpen);
+        }
+
         async function uploadFile(file) {
             const formData = new FormData();
             formData.append('file', file);
-            
+
+            // Append known PII profile values (empty strings are skipped server-side)
+            const profileFields = {
+                profile_firstName: 'profileFirstName',
+                profile_lastName:  'profileLastName',
+                profile_email:     'profileEmail',
+                profile_phone:     'profilePhone',
+                profile_address:   'profileAddress',
+                profile_zip:       'profileZip',
+            };
+            for (const [formKey, elemId] of Object.entries(profileFields)) {
+                const val = (document.getElementById(elemId)?.value || '').trim();
+                if (val) formData.append(formKey, val);
+            }
+
             try {
                 const response = await fetch('/analyze', {
                     method: 'POST',
@@ -1367,12 +1567,43 @@
                 html += `<span class="stat-label">Total Requests</span>`;
                 html += `</div>`;
                 html += '</div>';
+
+                // ── Damages summary block ─────────────────────────────────
+                if (data.estimated_damages != null) {
+                    const dd = data.damages_detail || {};
+                    const wtVendors = dd.wiretap_vendors || [];
+                    const prVendors = dd.pen_reg_vendors || [];
+                    const wtDmg     = dd.wiretap_damages  || 0;
+                    const prDmg     = dd.pen_reg_damages   || 0;
+                    const total     = data.estimated_damages || 0;
+
+                    html += '<div class="damages-summary">';
+                    html += '<div class="damages-summary-title">💰 Estimated Statutory Damages (Single Plaintiff)</div>';
+                    html += '<div class="damages-total">$' + total.toLocaleString() + '</div>';
+                    if (wtVendors.length) {
+                        html += `<div class="damages-line">`;
+                        html += `<span class="damages-statute">CIPA § 637.2 — Wiretapping</span>`;
+                        html += `<span class="damages-amount">$${wtDmg.toLocaleString()}</span>`;
+                        html += `</div>`;
+                        html += `<div class="damages-vendors">${wtVendors.length} vendor(s) × $5,000: ${wtVendors.join(', ')}</div>`;
+                    }
+                    if (prVendors.length) {
+                        html += `<div class="damages-line">`;
+                        html += `<span class="damages-statute">CIPA § 638.51 — Pen Register</span>`;
+                        html += `<span class="damages-amount">$${prDmg.toLocaleString()}</span>`;
+                        html += `</div>`;
+                        html += `<div class="damages-vendors">${prVendors.length} vendor(s) × $2,500: ${prVendors.join(', ')}</div>`;
+                    }
+                    html += '<div class="damages-note">Damages are per-vendor per-session — not per data field captured.</div>';
+                    html += '</div>';
+                }
+
             } else {
                 html += '<div class="empty-state">';
                 html += '<div class="empty-state-icon">✓</div>';
                 html += '<div class="empty-state-text">No major third-party tracking detected in this HAR file</div>';
                 html += '</div>';
-                
+
                 html += '<div class="stats">';
                 html += `<div class="stat">`;
                 html += `<span class="stat-number">${data.total_requests}</span>`;
@@ -1384,9 +1615,9 @@
                 html += `</div>`;
                 html += '</div>';
             }
-            
+
             html += '</div>';
-            
+
             // First-party PII collection card (NEW!)
             if (data.first_party_pii && data.first_party_pii.pii_count > 0) {
                 html += '<div class="timeline-card first-party-card">';
@@ -1631,7 +1862,14 @@
                                 const lc = pii.legal_context;
                                 html += '<div class="legal-summary">';
                                 html += `<div class="legal-issue">⚖️ <strong>Issue:</strong> ${escapeHtml(lc.what_happened)}</div>`;
-                                html += `<div class="legal-damages">💰 <strong>Estimated Damages:</strong> $${lc.estimated_damages.toLocaleString()}</div>`;
+                                // Damages are calculated per-vendor per-session under CIPA,
+                                // not per data field — show statute only, not a per-item dollar figure.
+                                const statute = lc.violation_type === 'hashed_pii_third_party'
+                                    ? 'CIPA § 637.2 / § 638.51 (wiretapping / pen register)'
+                                    : lc.violation_type === 'plaintext_pii_third_party'
+                                        ? 'CIPA § 637.2 (wiretapping — real-time interception)'
+                                        : 'CIPA § 638.51 (pen register — tracking)';
+                                html += `<div class="legal-damages">⚖️ <strong>Applicable Statute:</strong> ${statute}</div>`;
                                 html += '</div>';
                                 
                                 // Expandable legal details
