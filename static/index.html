@@ -1571,30 +1571,31 @@
                 // ── Damages summary block ─────────────────────────────────
                 if (data.estimated_damages != null) {
                     const dd = data.damages_detail || {};
-                    const wtVendors = dd.wiretap_vendors || [];
-                    const prVendors = dd.pen_reg_vendors || [];
-                    const wtDmg     = dd.wiretap_damages  || 0;
-                    const prDmg     = dd.pen_reg_damages   || 0;
-                    const total     = data.estimated_damages || 0;
+                    const conDmg  = dd.con_damages  || 0;
+                    const hybDmg  = dd.hyb_damages  || 0;
+                    const aggDmg  = dd.agg_damages  || 0;
+                    const conViol = dd.con_violations || 0;
+                    const hybViol = dd.hyb_violations || 0;
+                    const aggViol = dd.agg_violations || 0;
 
                     html += '<div class="damages-summary">';
-                    html += '<div class="damages-summary-title">💰 Estimated Statutory Damages (Single Plaintiff)</div>';
-                    html += '<div class="damages-total">$' + total.toLocaleString() + '</div>';
-                    if (wtVendors.length) {
-                        html += `<div class="damages-line">`;
-                        html += `<span class="damages-statute">CIPA § 637.2 — Wiretapping</span>`;
-                        html += `<span class="damages-amount">$${wtDmg.toLocaleString()}</span>`;
-                        html += `</div>`;
-                        html += `<div class="damages-vendors">${wtVendors.length} vendor(s) × $5,000: ${wtVendors.join(', ')}</div>`;
-                    }
-                    if (prVendors.length) {
-                        html += `<div class="damages-line">`;
-                        html += `<span class="damages-statute">CIPA § 638.51 — Pen Register</span>`;
-                        html += `<span class="damages-amount">$${prDmg.toLocaleString()}</span>`;
-                        html += `</div>`;
-                        html += `<div class="damages-vendors">${prVendors.length} vendor(s) × $2,500: ${prVendors.join(', ')}</div>`;
-                    }
-                    html += '<div class="damages-note">Damages are per-vendor per-session — not per data field captured.</div>';
+                    html += '<div class="damages-summary-title">💰 Estimated Statutory Damages (Single Plaintiff · $5,000/violation)</div>';
+                    html += '<div class="damages-line">';
+                    html += `<span class="damages-statute">Conservative</span>`;
+                    html += `<span class="damages-amount">$${conDmg.toLocaleString()}</span>`;
+                    html += '</div>';
+                    html += `<div class="damages-vendors">${conViol} violation(s) — 1 per vendor with replay + 1 per vendor with any PII</div>`;
+                    html += '<div class="damages-line">';
+                    html += `<span class="damages-statute">Hybrid</span>`;
+                    html += `<span class="damages-amount">$${hybDmg.toLocaleString()}</span>`;
+                    html += '</div>';
+                    html += `<div class="damages-vendors">${hybViol} violation(s) — replay per vendor + 1 per distinct PII type per vendor</div>`;
+                    html += '<div class="damages-line">';
+                    html += `<span class="damages-statute">Aggressive</span>`;
+                    html += `<span class="damages-amount">$${aggDmg.toLocaleString()}</span>`;
+                    html += '</div>';
+                    html += `<div class="damages-vendors">${aggViol} violation(s) — every individual replay request + every PII-bearing request</div>`;
+                    html += '<div class="damages-note">All tiers: $5,000 per violation · single plaintiff · single session</div>';
                     html += '</div>';
                 }
 

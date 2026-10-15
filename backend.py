@@ -2349,31 +2349,57 @@ def build_litigation_extract(results, risk):
                  f"Hashed={bk.get('hashed',0)} | Damages={bk.get('damages',0)} | "
                  f"Vendors={bk.get('vendors',0)} | Aggravating={bk.get('aggravating',0)}")
     lines.append("")
+    lines.append("Rate: $5,000 per violation (CIPA statutory minimum)")
+    lines.append("")
 
-    # Per-statute, per-vendor breakdown
     dd = risk.get('damages_detail', {})
-    wt_vendors = dd.get('wiretap_vendors', [])
-    pr_vendors  = dd.get('pen_reg_vendors', [])
-    wt_dmg      = dd.get('wiretap_damages', 0)
-    pr_dmg      = dd.get('pen_reg_damages', 0)
-    total_dmg   = risk.get('estimated_damages', 0)
 
-    lines.append("Statutory damages basis:")
-    if wt_vendors:
-        lines.append(f"  CIPA § 637.2 (Wiretapping — real-time interception): "
-                     f"${wt_dmg:,}  [{len(wt_vendors)} vendor(s) × $5,000]")
-        for vn in wt_vendors:
-            lines.append(f"    • {vn}")
-    if pr_vendors:
-        lines.append(f"  CIPA § 638.51 (Pen Register — tracking pixel/beacon): "
-                     f"${pr_dmg:,}  [{len(pr_vendors)} vendor(s) × $2,500]")
-        for vn in pr_vendors:
-            lines.append(f"    • {vn}")
-    if not wt_vendors and not pr_vendors:
-        lines.append("  No qualifying vendors identified for statutory damages.")
+    # ── Conservative ────────────────────────────────────────────────────────
+    lines.append("CONSERVATIVE: 1 violation per vendor with session replay "
+                 "+ 1 violation per vendor that transmitted any PII")
+    con_replay = dd.get('con_replay_vendors', [])
+    con_pii    = dd.get('con_pii_vendors', [])
+    con_viol   = dd.get('con_violations', 0)
+    con_dmg    = dd.get('con_damages', 0)
+    if con_replay:
+        lines.append(f"  Session replay vendors ({len(con_replay)}): " + ", ".join(con_replay))
+    if con_pii:
+        lines.append(f"  PII-receiving vendors ({len(con_pii)}): " + ", ".join(con_pii))
+    lines.append(f"  Conservative violations: {con_viol} × $5,000 = ${con_dmg:,}")
+    lines.append("")
 
-    lines.append(f"\n  TOTAL ESTIMATED DAMAGES (single plaintiff): ${total_dmg:,}")
-    lines.append("  Note: Damages are per-vendor per-session under CIPA, not per data field.")
+    # ── Hybrid ──────────────────────────────────────────────────────────────
+    lines.append("HYBRID: 1 violation per vendor with session replay "
+                 "+ 1 violation per distinct PII type per vendor")
+    hyb_pii_detail = dd.get('hyb_pii_detail', {})
+    hyb_pii_viol   = dd.get('hyb_pii_violations', 0)
+    hyb_viol       = dd.get('hyb_violations', 0)
+    hyb_dmg        = dd.get('hyb_damages', 0)
+    if con_replay:
+        lines.append(f"  Session replay vendors ({len(con_replay)}): " + ", ".join(con_replay))
+    if hyb_pii_detail:
+        lines.append(f"  PII type violations by vendor ({hyb_pii_viol} total):")
+        for vn, types in hyb_pii_detail.items():
+            lines.append(f"    • {vn}: {', '.join(types)} ({len(types)} violation(s))")
+    lines.append(f"  Hybrid violations: {hyb_viol} × $5,000 = ${hyb_dmg:,}")
+    lines.append("")
+
+    # ── Aggressive ──────────────────────────────────────────────────────────
+    lines.append("AGGRESSIVE: 1 violation per individual replay request "
+                 "+ 1 violation per individual PII-bearing request")
+    agg_replay_req = dd.get('agg_replay_requests', 0)
+    agg_pii_req    = dd.get('agg_pii_requests', 0)
+    agg_viol       = dd.get('agg_violations', 0)
+    agg_dmg        = dd.get('agg_damages', 0)
+    lines.append(f"  Individual replay requests: {agg_replay_req}")
+    lines.append(f"  Individual PII-bearing requests: {agg_pii_req}")
+    lines.append(f"  Aggressive violations: {agg_viol} × $5,000 = ${agg_dmg:,}")
+    lines.append("")
+
+    lines.append(f"TOTAL ESTIMATED DAMAGES (single plaintiff):")
+    lines.append(f"  Conservative: ${con_dmg:,}")
+    lines.append(f"  Hybrid:       ${hyb_dmg:,}")
+    lines.append(f"  Aggressive:   ${agg_dmg:,}")
     lines.append("")
     lines.append("LeadID/Jornaya detected: " + ("YES" if results.get('leadid_detected') else "NO"))
     lines.append(f"Total requests in session: {results.get('total_requests', 0)}")
@@ -2590,25 +2616,25 @@ derived from the provided data. If you are running long, reduce detail in earlie
 rather than omitting later ones. The Damages Analysis (section 7) is essential and must
 always be included.
 
-CRITICAL RULE — DAMAGES MODEL (MANDATORY — NO EXCEPTIONS):
-CIPA statutory damages are computed per-vendor per-session for ONE plaintiff.
-Each vendor counts ONCE regardless of how many fields, transmissions, or hashes it received.
+CRITICAL RULE — DAMAGES MODEL:
+CIPA statutory damages are $5,000 per violation, single plaintiff.
 
-Rates:
-  - CIPA § 637.2 (Wiretapping — real-time form interception, e.g. TrustedForm/LeadID): $5,000 per vendor
-  - CIPA § 638.51 (Pen Register — tracking pixels, session replay, behavioral beacons): $2,500 per vendor
+Three tiers are provided in the analysis extract under "DAMAGES ANALYSIS". Reproduce all three
+exactly as calculated — do NOT recompute, do NOT change the violation counts or totals:
 
-OUTPUT REQUIREMENT — DAMAGES SECTION:
-You MUST produce exactly ONE damages table. DO NOT produce conservative / hybrid / aggressive
-tiers. DO NOT count per-field, per-transmission, or per-hash. DO NOT create sub-sections or
-counting approaches. The analysis extract under "Statutory damages basis:" already has the
-correct vendor list and totals — reproduce those exactly in one table with columns:
-Vendor | Statute | HAR ID (representative) | Rate | Amount
+  CONSERVATIVE: 1 violation per vendor with session replay capability
+              + 1 violation per vendor that transmitted any PII
+    (Each vendor counts once per category; a vendor with both replay and PII = 2 violations)
 
-End the section with a single total and the note:
-"Damages are per-vendor per-session for a single plaintiff under CIPA, not per data field or transmission."
+  HYBRID:       Same session replay count as conservative
+              + 1 violation per distinct PII type per vendor
+                (e.g. email + phone + name at one vendor = 3 violations)
 
-Any output that presents multiple damage tier totals or per-field counting violates this instruction.
+  AGGRESSIVE:   1 violation per individual replay HTTP request
+              + 1 violation per individual PII-bearing HTTP request
+
+Use the violation counts and dollar totals from the extract exactly. Present all three
+approaches in one section with a summary table at the end showing all three totals.
 
 CRITICAL RULE — HASH VERIFICATION:
 The analysis data marks each hashed PII value as either:
@@ -2646,10 +2672,9 @@ required in every output:
   8. Cookie Blocking Analysis
   9. Third-Party ID Sharing / Cookie Sync Table
   10. Final Contamination Check Table
-The Damages Analysis (section 7) MUST contain exactly ONE table listing each vendor once,
-with its applicable statute, a representative HAR ID, per-vendor rate, and amount.
-DO NOT produce conservative / hybrid / aggressive tiers. Each vendor counts once.
-Total must match the "TOTAL ESTIMATED DAMAGES" figure in the analysis extract.
+The Damages Analysis (section 7) MUST present all three tiers — Conservative, Hybrid, and
+Aggressive — using the violation counts and dollar totals from the analysis extract exactly.
+Rate is $5,000 per violation across all tiers. End with a summary table showing all three totals.
 The contamination check table is mandatory in every output.
 
 If the HAR analysis data contains a "VENDOR PII CONCENTRATION NOTE" section,
@@ -3825,60 +3850,131 @@ def compute_risk_score(results):
                     seen_plain.add(key)
                     plaintext_pii_items.append(p)
 
-    # --- Damages: per-vendor, per-statute (single plaintiff/session model) ---
-    # CIPA § 637.2  — wiretapping (real-time interception by lead capture vendors
-    #                 like TrustedForm/LeadID): $5,000 per vendor per session.
-    # CIPA § 638.51 — pen register (tracking pixels / beacons firing without
-    #                 consent): $2,500 per vendor per session.
+    # --- Damages: three-tier model, $5,000 per violation (single plaintiff) ---
     #
-    # Vendors are bucketed by their type; lead-capture vendors trigger the higher
-    # wiretapping claim, all others trigger the pen-register claim.
-    # Only vendors that actually received PII (or fired tracking pixels) count.
+    # CONSERVATIVE: 1 violation per vendor with session replay
+    #             + 1 violation per vendor that transmitted any PII
+    #   (a vendor counts once per category even if both apply)
+    #
+    # HYBRID:      same session-replay count as conservative
+    #             + 1 violation per DISTINCT PII TYPE per vendor
+    #               (e.g. email + phone + name at one vendor = 3 violations)
+    #
+    # AGGRESSIVE:  1 violation per individual replay request
+    #             + 1 violation per individual PII-bearing request
+    #
+    # All tiers: $5,000 per violation.
 
-    WIRETAP_TYPES   = {'lead_capture'}          # § 637.2 — $5,000 / vendor
-    PEN_REG_TYPES   = {                          # § 638.51 — $2,500 / vendor
+    REPLAY_VENDOR_TYPES = {
         'session_replay', 'behavioral_tracking', 'analytics_replay',
-        'call_tracking', 'ctv_attribution', 'analytics', 'advertising',
-        'social_pixel', 'marketing_automation',
+        'lead_capture', 'call_tracking', 'ctv_attribution',
     }
 
-    wiretap_vendors  = []   # vendors triggering § 637.2
-    pen_reg_vendors  = []   # vendors triggering § 638.51
-    seen_vnames      = set()
+    # ── Conservative ────────────────────────────────────────────────────────
+    con_replay_vendors = []   # vendors with session replay capability
+    con_pii_vendors    = []   # vendors that received any PII
+    seen_replay = set()
+    seen_pii    = set()
 
     for vname, vdata in vendors.items():
-        if vname in seen_vnames:
-            continue
-        has_pii      = vdata.get('pii_count', 0) > 0
+        vtype         = vdata.get('vendor_type', '')
         request_count = vdata.get('request_count', 0)
-        vtype        = vdata.get('vendor_type', '')
+        has_pii       = vdata.get('pii_count', 0) > 0
 
-        # Wiretap: lead-capture vendors that captured PII
-        if vtype in WIRETAP_TYPES and has_pii:
-            wiretap_vendors.append(vname)
-            seen_vnames.add(vname)
-        # Pen register: tracking/analytics vendors that fired any request
-        elif vtype in PEN_REG_TYPES and request_count > 0:
-            pen_reg_vendors.append(vname)
-            seen_vnames.add(vname)
-        # Fallback: any other vendor that received plaintext PII
-        elif has_pii and vname not in seen_vnames:
-            pen_reg_vendors.append(vname)
-            seen_vnames.add(vname)
+        if vtype in REPLAY_VENDOR_TYPES and request_count > 0 and vname not in seen_replay:
+            con_replay_vendors.append(vname)
+            seen_replay.add(vname)
 
-    wiretap_dmg  = len(wiretap_vendors)  * 5000   # § 637.2
-    pen_reg_dmg  = len(pen_reg_vendors)  * 2500   # § 638.51
-    total_damages = wiretap_dmg + pen_reg_dmg
+        if has_pii and vname not in seen_pii:
+            con_pii_vendors.append(vname)
+            seen_pii.add(vname)
 
-    # Store breakdown for downstream use
+    con_violations = len(con_replay_vendors) + len(con_pii_vendors)
+    con_damages    = con_violations * 5000
+
+    # ── Hybrid ──────────────────────────────────────────────────────────────
+    # Session replay: same as conservative (1 per vendor)
+    # PII: 1 per distinct PII type per vendor
+    # Normalize PII type labels to canonical categories so "Email", "Email Address",
+    # "Hashed Email" all collapse to the same bucket per vendor.
+    def _canonical_pii_type(raw_type):
+        t = raw_type.lower()
+        if 'email'   in t: return 'email'
+        if 'phone'   in t: return 'phone'
+        if 'first'   in t or 'fname' in t: return 'first_name'
+        if 'last'    in t or 'lname' in t: return 'last_name'
+        if 'name'    in t: return 'name'
+        if 'address' in t or 'street' in t: return 'address'
+        if 'city'    in t: return 'city'
+        if 'state'   in t: return 'state'
+        if 'zip'     in t or 'postal' in t: return 'zip'
+        if 'dob'     in t or 'birth' in t: return 'dob'
+        if 'ssn'     in t or 'social' in t: return 'ssn'
+        return t  # keep as-is for anything else
+
+    hyb_pii_violations = 0
+    hyb_pii_detail     = {}   # {vname: [canonical_types]}
+
+    for vname, vdata in vendors.items():
+        pii_items  = vdata.get('pii', [])
+        seen_types = set()
+        for p in pii_items:
+            canon = _canonical_pii_type(p.get('type', ''))
+            if canon not in seen_types:
+                seen_types.add(canon)
+                hyb_pii_violations += 1
+        if seen_types:
+            hyb_pii_detail[vname] = list(seen_types)
+
+    hyb_violations = len(con_replay_vendors) + hyb_pii_violations
+    hyb_damages    = hyb_violations * 5000
+
+    # ── Aggressive ──────────────────────────────────────────────────────────
+    # Count individual requests: each replay request + each PII-bearing request
+    agg_replay_requests = 0
+    agg_pii_requests    = 0
+
+    for vdata in vendors.values():
+        vtype = vdata.get('vendor_type', '')
+        if vtype in REPLAY_VENDOR_TYPES:
+            # Option B: only count POST requests (data-capturing events: beacons,
+            # DOM snapshots, keystroke payloads).  GET requests are script loads,
+            # CORS preflights, or static asset fetches — not data captures.
+            for req in vdata.get('all_requests', []):
+                if req.get('method', 'GET').upper() == 'POST':
+                    agg_replay_requests += 1
+        # Count only requests that actually carried PII (has_pii flag on each row)
+        for req in vdata.get('all_requests', []):
+            if req.get('has_pii', False):
+                agg_pii_requests += 1
+
+    agg_violations = agg_replay_requests + agg_pii_requests
+    agg_damages    = agg_violations * 5000
+
+    # Use conservative as the headline figure (most defensible)
+    total_damages = con_damages
+
+    # Store full breakdown for frontend + litigation extract
     _damages_detail = {
-        'wiretap_vendors':  wiretap_vendors,
-        'pen_reg_vendors':  pen_reg_vendors,
-        'wiretap_damages':  wiretap_dmg,
-        'pen_reg_damages':  pen_reg_dmg,
-        'per_vendor_rate':  {'wiretap': 5000, 'pen_reg': 2500},
-        'statute':          {'wiretap': 'CIPA § 637.2', 'pen_reg': 'CIPA § 638.51'},
-        'basis':            'single plaintiff / single session',
+        # Conservative
+        'con_replay_vendors': con_replay_vendors,
+        'con_pii_vendors':    con_pii_vendors,
+        'con_violations':     con_violations,
+        'con_damages':        con_damages,
+        # Hybrid
+        'hyb_replay_vendors': con_replay_vendors,   # same vendors as conservative
+        'hyb_pii_detail':     hyb_pii_detail,
+        'hyb_pii_violations': hyb_pii_violations,
+        'hyb_violations':     hyb_violations,
+        'hyb_damages':        hyb_damages,
+        # Aggressive
+        'agg_replay_requests': agg_replay_requests,
+        'agg_pii_requests':    agg_pii_requests,
+        'agg_violations':      agg_violations,
+        'agg_damages':         agg_damages,
+        # Meta
+        'rate_per_violation':  5000,
+        'basis':               'single plaintiff / single session — $5,000 per violation',
     }
 
     SESSION_REPLAY_TYPES = {'session_replay', 'behavioral_tracking', 'lead_capture',
@@ -3918,13 +4014,13 @@ def compute_risk_score(results):
         return min(100, 75 + (n - 2) * 10)
 
     def _damage_sub(d):
-        # Single-session scale: max realistic exposure ~$30K
-        # (1 wiretap vendor @ $5K + several pen-reg vendors @ $2.5K each)
-        if d == 0:      return 0
-        if d <= 2500:   return 35
-        if d <= 5000:   return 55
-        if d <= 10000:  return 75
-        if d <= 20000:  return 90
+        # Conservative tier scale: realistic range $5K–$100K+
+        if d == 0:       return 0
+        if d <= 5000:    return 35
+        if d <= 15000:   return 55
+        if d <= 30000:   return 70
+        if d <= 50000:   return 85
+        if d <= 75000:   return 95
         return 100
 
     def _vendor_sub(n):
