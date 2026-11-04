@@ -2013,16 +2013,30 @@
             }
             
             // LeadID timeline is now shown inline in the Vendors section above
-                        // Actions
-            html += '<div class="summary-card">';
-            html += '<div class="actions">';
-            html += '<button onclick="copyTimeline()">📋 Copy Data</button>';
-            html += '<button onclick="downloadResults()" class="secondary">⬇ Download Results</button>';
-            html += '<button onclick="analyzeAnother()" class="secondary">📁 Analyze Another File</button>';
-            html += '</div>';
-            html += '</div>';
-            
+
             results.innerHTML = html;
+
+            // Actions bar — inserted after the generate panel (which sits before #results)
+            const existingActions = document.getElementById('actionsBar');
+            if (existingActions) existingActions.remove();
+            const actionsBar = document.createElement('div');
+            actionsBar.id = 'actionsBar';
+            actionsBar.className = 'summary-card';
+            actionsBar.innerHTML = '<div class="actions">' +
+                '<button onclick="copyTimeline()">📋 Copy Data</button>' +
+                '<button onclick="downloadResults()" class="secondary">⬇ Download Results</button>' +
+                '<button onclick="analyzeAnother()" class="secondary">📁 Analyze Another File</button>' +
+                '</div>';
+            const generatePanel = document.getElementById('generatePanel');
+            if (generatePanel && generatePanel.nextSibling) {
+                generatePanel.parentNode.insertBefore(actionsBar, generatePanel.nextSibling);
+            } else if (generatePanel) {
+                generatePanel.parentNode.appendChild(actionsBar);
+            } else {
+                // Fallback: insert before results
+                const resultsDiv = document.getElementById('results');
+                if (resultsDiv) resultsDiv.parentNode.insertBefore(actionsBar, resultsDiv);
+            }
         }
         
         function escapeHtml(text) {
@@ -2094,7 +2108,7 @@
             // Clone the results HTML and strip interactive elements
             const clone = resultsDiv.cloneNode(true);
             // Remove action buttons and generate panel from clone
-            clone.querySelectorAll('.actions, #generatePanel, .btn, button').forEach(el => el.remove());
+            clone.querySelectorAll('.actions, #generatePanel, #actionsBar, .btn, button').forEach(el => el.remove());
 
             const bodyHtml = clone.innerHTML;
 
@@ -2309,7 +2323,7 @@
   .expandable-section { display: block !important; }
 
   /* Hide interactive elements ── */
-  .actions, .expandable-toggle, #generatePanel,
+  .actions, .expandable-toggle, #generatePanel, #actionsBar,
   button, .btn, .copy-btn { display: none !important; }
 
   @media print {
@@ -2513,12 +2527,10 @@ ${bodyHtml}
                     <div class="generate-status" id="generateStatus"></div>`;
             }
 
-            // Insert after the results div
+            // Insert before the results div
             const resultsDiv = document.getElementById('results');
-            if (resultsDiv && resultsDiv.nextSibling) {
-                resultsDiv.parentNode.insertBefore(panel, resultsDiv.nextSibling);
-            } else if (resultsDiv) {
-                resultsDiv.parentNode.appendChild(panel);
+            if (resultsDiv) {
+                resultsDiv.parentNode.insertBefore(panel, resultsDiv);
             }
         }
 
