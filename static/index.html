@@ -1306,7 +1306,7 @@
                 <div class="drop-zone-subtitle">or click to browse</div>
                 <input type="file" id="fileInput" accept=".har">
                 <div class="file-info">
-                    ✓ Supports files up to 150 MB<br>
+                    ✓ Supports files up to 175 MB<br>
                     ✓ .har files only<br>
                     ✓ Your data stays private - analyzed locally
                 </div>
@@ -1415,10 +1415,10 @@
                 return;
             }
             
-            // Reject files over 150MB before upload attempt
+            // Reject files over 175MB before upload attempt
             const sizeMB = (file.size / 1024 / 1024).toFixed(2);
-            if (file.size > 150 * 1024 * 1024) {
-                showError(`File too large (${sizeMB} MB). Maximum file size is 150 MB. Consider splitting the session or using a shorter recording window.`);
+            if (file.size > 175 * 1024 * 1024) {
+                showError(`File too large (${sizeMB} MB). Maximum file size is 175 MB. Consider splitting the session or using a shorter recording window.`);
                 return;
             }
             console.log(`Uploading ${sizeMB} MB HAR file`);

@@ -77,7 +77,7 @@ except ImportError:
 
 app = Flask(__name__, static_folder='static')
 
-# Max upload size — 150MB single file, 5x150MB bulk = 750MB + overhead
+# Max upload size — 175MB single file, 5x175MB bulk = 875MB + overhead
 app.config['MAX_CONTENT_LENGTH'] = 800 * 1024 * 1024  # 800MB covers bulk uploads with overhead
 
 
@@ -284,14 +284,76 @@ def detect_hash_pattern(key, value):
                 'value': value[:16] + '...',  # Show first 16 chars
                 'note': 'Full hash: ' + value
             }
-        if any(term in key_lower for term in ['phone', 'tel', 'mobile']):
+        if any(term in key_lower for term in ['phone', 'tel', 'mobile', 'ph']):
             return {
                 'type': 'Hashed Phone (SHA-256)',
                 'field': key,
                 'value': value[:16] + '...',
                 'note': 'Full hash: ' + value
             }
-    
+        # Name / address fields — Meta CAPI uses udff[fn], audff[fn][0][v], udff[ln], audff[ln][0][v]
+        # TikTok uses context.user.fn / context.user.ln
+        #
+        # BUG FIX: re.sub(r'\[[\d\w]*\]', '') strips ALL bracket groups including [fn]/[ln]/[st],
+        # leaving only the prefix ('audff', 'udff').  For audff[fn][0][v] the endswith('[fn]')
+        # check also fails because the key ends with '[v]', not '[fn]'.
+        # Fix: collect ALL tokens from bracket contents AND dot-split segments, then check across
+        # the full token set.  This handles udff[fn], audff[fn][0][v], context.user.fn, etc.
+        bracket_tokens = re.findall(r'\[([^\[\]]+)\]', key_lower)   # e.g. ['fn', '0', 'v']
+        dot_tokens     = re.split(r'[\[\].\s]+', key_lower)          # e.g. ['audff', 'fn', '0', 'v']
+        key_tokens     = set(bracket_tokens + dot_tokens)            # union of both
+        if any(p in ('fn', 'firstname', 'first_name', 'first') for p in key_tokens):
+            return {
+                'type': 'Hashed First Name (SHA-256)',
+                'field': key,
+                'value': value[:16] + '...',
+                'note': 'Full hash: ' + value
+            }
+        if any(p in ('ln', 'lastname', 'last_name', 'last') for p in key_tokens):
+            return {
+                'type': 'Hashed Last Name (SHA-256)',
+                'field': key,
+                'value': value[:16] + '...',
+                'note': 'Full hash: ' + value
+            }
+        # State, city, zip — Meta CAPI udff[st], audff[st][0][v], udff[ct], audff[zp]
+        if any(p in ('st', 'state') for p in key_tokens):
+            return {
+                'type': 'Hashed State (SHA-256)',
+                'field': key,
+                'value': value[:16] + '...',
+                'note': 'Full hash: ' + value
+            }
+        if any(p in ('ct', 'city') for p in key_tokens):
+            return {
+                'type': 'Hashed City (SHA-256)',
+                'field': key,
+                'value': value[:16] + '...',
+                'note': 'Full hash: ' + value
+            }
+        if any(p in ('zp', 'zip', 'postal') for p in key_tokens):
+            return {
+                'type': 'Hashed Zip Code (SHA-256)',
+                'field': key,
+                'value': value[:16] + '...',
+                'note': 'Full hash: ' + value
+            }
+        if any(p in ('country',) for p in key_tokens):
+            return {
+                'type': 'Hashed Country (SHA-256)',
+                'field': key,
+                'value': value[:16] + '...',
+                'note': 'Full hash: ' + value
+            }
+        # External / CRM ID — ud[external_id], context.user.external_id
+        if any(term in key_lower for term in ['external_id', 'externalid', 'extern']):
+            return {
+                'type': 'Hashed External ID (SHA-256)',
+                'field': key,
+                'value': value[:16] + '...',
+                'note': 'Full hash: ' + value
+            }
+
     # SHA-1 (40 hex characters)
     elif re.match(r'^[a-f0-9]{40}$', value.lower()):
         if any(term in key_lower for term in ['email', 'em', 'mail']):
@@ -463,6 +525,36 @@ def extract_pii_from_params(params):
         'sec-ch-ua', 'architecture', 'bitness', 'model', 'wow64',
     ]
     
+    # PRIORITY -1: Bing UET transaction amount
+    # 'ev' (event value / purchase amount) and 'gc' (currency code) are both in
+    # exclude_patterns as generic tracking params, but when they appear TOGETHER
+    # in a Bing UET beacon they represent a real transaction dollar amount sent to
+    # Microsoft — a significant financial disclosure missed by the exclude filter.
+    # We extract them here, before the main loop, so they are never silently dropped.
+    _ev = params.get('ev') or params.get('EV')
+    _gc = params.get('gc') or params.get('GC')
+    if _ev is not None:
+        _ev_val = (_ev[0] if isinstance(_ev, list) else _ev)
+        _gc_val = (_gc[0] if isinstance(_gc, list) else _gc) if _gc is not None else None
+        try:
+            float(_ev_val)  # Only emit if it looks like a number
+            _label = f'Transaction Amount (Bing UET): {_ev_val}'
+            if _gc_val:
+                _label += f' {_gc_val.upper()}'
+            pii.append({
+                'type': 'Transaction Amount',
+                'field': 'ev',
+                'value': _label
+            })
+            if _gc_val:
+                pii.append({
+                    'type': 'Currency Code',
+                    'field': 'gc',
+                    'value': _gc_val.upper()
+                })
+        except (ValueError, TypeError):
+            pass  # ev present but not a number — not a transaction beacon
+
     # Check each parameter
     for key, value in params.items():
         # Handle both single values and lists
@@ -969,15 +1061,82 @@ def _decode_trustedform_event_body(json_outer):
                     if node not in input_values_by_node:
                         input_values_by_node[node] = []
                     input_values_by_node[node].append(val)
+            # "cd" child data events carry the display text of select/slider values
+            # e.g. [ts, "d", {"cd": [{"id": 191, "v": "$1,000,001 - $1,100,000"}]}]
+            for cd in payload.get('cd', []):
+                if not isinstance(cd, dict):
+                    continue
+                val  = cd.get('v', '')
+                node = cd.get('id')
+                if isinstance(val, str) and val and node is not None:
+                    # Filter out CSS stylesheet blobs injected by MUI/styled-components
+                    # (they appear as cd events on style nodes, e.g. ".css-sg30w4 .slider-box {")
+                    _css_indicators = ('{', '}', '@media', '@keyframes', '.css-', 'px;', 'rem;', 'em;')
+                    if any(ind in val for ind in _css_indicators) and len(val) > 80:
+                        continue  # Skip CSS stylesheet text, not a user selection
+                    # Use cd_ prefix for cd entries to avoid collisions with ac entries
+                    cd_node_key = f'cd_{node}'
+                    if cd_node_key not in input_values_by_node:
+                        input_values_by_node[cd_node_key] = []
+                    input_values_by_node[cd_node_key].append(val)
+
+        # "cl" click events — may contain TCPA consent disclosure text
+        # Format: [ts, "cl", "disclosure text", click_count, [node_ids], [urls], bool]
+        elif event_type == 'cl' and len(record) >= 3:
+            click_text = record[2]
+            if isinstance(click_text, str) and len(click_text) > 50:
+                # Long click text is a consent disclosure / terms text
+                # Surface it as a special type for the litigation package
+                pii.append({
+                    'type':  'Consent Disclosure Text (TrustedForm click capture)',
+                    'field': 'click_event_text',
+                    'value': click_text[:500],
+                    'note':  (f'TrustedForm captured click event containing disclosure text '
+                              f'({len(click_text)} chars). This text was presented to the user '
+                              f'at the time of the click. Full text: {click_text[:1000]!r}'),
+                })
 
     # For each node, take the longest accumulated value (most-complete entry).
     # Shorter intermediates are keystroke-by-keystroke captures — still legally
     # significant as proof of interception, but we surface the final value for
     # PII detection and let Claude describe the progression in context.
     for node_id, vals in input_values_by_node.items():
-        final_val = max(vals, key=len)
+        # Pick the longest value; on ties, prefer the LAST one (most complete input).
+        # e.g. "(669) 237-562_" and "(669) 237-5623" are both 14 chars — take the latter.
+        max_len = max(len(v) for v in vals)
+        final_val = next(v for v in reversed(vals) if len(v) == max_len)
         if len(final_val) < 2:
             continue
+
+        # Child-data slider/select nodes (keyed "cd_N") — these carry display
+        # text of slider positions, dropdowns, and radio selections (e.g.
+        # "$1,000,001 - $1,100,000", "25% - $287,500"). Surface them as
+        # financial/selection captures rather than running generic PII detection.
+        if isinstance(node_id, str) and node_id.startswith('cd_'):
+            # Financial/dollar value pattern
+            import re as _re2
+            if _re2.search(r'\$[\d,]+', final_val):
+                pii.append({
+                    'type':  'Financial Selection (TrustedForm DOM capture)',
+                    'field': f'slider_node_{node_id}',
+                    'value': final_val,
+                    'note':  (f'TrustedForm DOM child-data event captured slider/select '
+                              f'display value on node {node_id}. '
+                              f'Progression: {" → ".join(vals[:5])}'
+                              + (' ...' if len(vals) > 5 else '')),
+                })
+            elif vals:  # any other display text worth noting
+                pii.append({
+                    'type':  'Form Selection (TrustedForm DOM capture)',
+                    'field': f'slider_node_{node_id}',
+                    'value': final_val,
+                    'note':  (f'TrustedForm DOM child-data event captured selection '
+                              f'display value on node {node_id}. '
+                              f'Progression: {" → ".join(vals[:5])}'
+                              + (' ...' if len(vals) > 5 else '')),
+                })
+            continue
+
         # Run the final value through normal PII extraction by injecting it as
         # a synthetic parameter.  Use the node id as the field key so
         # detect_hash_pattern and extract_pii_from_params can classify it.
@@ -1307,6 +1466,11 @@ def detect_vendor_requests(entries):
                            'session_replay'),
         'sessioncam':     ('SessionCam', 'critical',
                            ['sessioncam.com', 'cdn.sessioncam.com'],
+                           'session_replay'),
+        'glassbox':       ('Glassbox', 'critical',
+                           ['glassboxcdn.com', 'cdn.glassboxcdn.com', 'glassboxdigital.io',
+                            'report.netgear.glassboxdigital.io', 'glassboxdigital.com',
+                            'cdn.glassbox.com', 'glassbox.com'],
                            'session_replay'),
         'quantummetric':  ('Quantum Metric', 'critical',
                            ['quantummetric.com', 'cdn.quantummetric.com', 'qm-prod.quantummetric.com'],
@@ -1963,7 +2127,15 @@ def build_litigation_extract(results, risk):
     vendors      = results.get('vendors', {})
     domain       = results.get('first_party', 'Unknown')
     session_date = results.get('session_date', 'Unknown')
-    consent      = 'NO (no consent mechanism detected in session)'
+    # Consent is NOT definitively determinable from network traffic alone —
+    # consent banners and cookie dialogs may exist outside the captured session.
+    # We report only what was positively confirmed in the HAR data.
+    consent_detected = results.get('consent_detected', False)
+    consent = (
+        'CONFIRMED (consent mechanism detected in session traffic)'
+        if consent_detected else
+        'NOT CONFIRMED in captured traffic (consent UI may exist outside this HAR session; do not assert absence categorically)'
+    )
 
     lines = []
     lines.append(f"Domain: {domain}")
@@ -1978,16 +2150,21 @@ def build_litigation_extract(results, risk):
     lines.append("VENDOR TIMELINE (chronological, original HAR IDs)")
     lines.append("=" * 60)
 
-    # Build a lookup: (vendor_name, url[:80], timestamp[:19]) → pii_item
-    # so we can annotate all_requests rows with PII detail when they match
-    pii_lookup = {}
+    # Build a lookup: har_index → [pii_item, ...]
+    # Use har_index as the primary key — it's the original HAR entry number
+    # and is unambiguous. Fall back to (vendor, url, timestamp) only when
+    # har_index is absent (older PII items may not carry it).
+    pii_by_har_index = {}   # har_index (int) → list of pii dicts
+    pii_by_url_ts    = {}   # (vendor, url[:80], ts[:19]) → list of pii dicts (fallback)
     for vdata in vendors.values():
         vname = vdata['name']
         for pii in vdata.get('pii', []):
-            key = (vname, pii.get('url', '')[:80], pii.get('timestamp', '')[:19])
-            if key not in pii_lookup:
-                pii_lookup[key] = []
-            pii_lookup[key].append(pii)
+            hidx = pii.get('har_index')
+            if hidx is not None:
+                pii_by_har_index.setdefault(hidx, []).append(pii)
+            else:
+                fb_key = (vname, pii.get('url', '')[:80], pii.get('timestamp', '')[:19])
+                pii_by_url_ts.setdefault(fb_key, []).append(pii)
 
     # Collect ALL vendor requests from all_requests (which carries har_index)
     # This gives us every request with its true original HAR position
@@ -2001,9 +2178,12 @@ def build_litigation_extract(results, risk):
             url       = req.get('url', '')
             method    = req.get('method', 'GET')
             resp_code = req.get('response_code', 0)
-            # Look up any PII associated with this request
-            lookup_key = (vname, url[:80], ts[:19])
-            pii_items  = pii_lookup.get(lookup_key, [])
+            # Primary: match by har_index; fallback: match by (vendor, url, timestamp)
+            if har_idx is not None and har_idx in pii_by_har_index:
+                pii_items = pii_by_har_index[har_idx]
+            else:
+                fb_key = (vname, url[:80], ts[:19])
+                pii_items = pii_by_url_ts.get(fb_key, [])
             all_events.append({
                 'har_index':   har_idx,
                 'timestamp':   ts,
@@ -2061,7 +2241,14 @@ def build_litigation_extract(results, risk):
                 if legal.get('cipa_elements'):
                     lines.append(f"    Legal: {legal['cipa_elements'][0]}")
         else:
-            lines.append(f"  Data: Session/identifier/tracking (no PII extracted from payload)")
+            # Check for sampled_for_replay=false in the URL — surfaces Datadog opt-out
+            url_lower = url.lower()
+            if 'sampled_for_replay=false' in url_lower:
+                lines.append(f"  ⚑ REPLAY DISABLED: sampled_for_replay=false — this vendor DID NOT record this session")
+            elif 'sampled_for_replay=true' in url_lower:
+                lines.append(f"  ⚑ REPLAY ACTIVE: sampled_for_replay=true — session recording confirmed active")
+            else:
+                lines.append(f"  Data: Session/identifier/tracking (no PII extracted from payload)")
 
     lines.append("")
 
@@ -2132,16 +2319,49 @@ def build_litigation_extract(results, risk):
                 hashlib.sha1(enc_norm).hexdigest(),
                 hashlib.md5(enc_norm).hexdigest(),
             })
-        # Phone: digits-only, E.164 (+1...), and 1... variants
+        # Phone: digits-only, +digits (international without country code),
+        # E.164 (+1...), and 1... variants.
+        # TikTok confirmed: suggested_values[0] = SHA-256('+' + digits_only)
+        #                   suggested_values[1] = SHA-256('+1' + digits_only)
+        # Meta confirmed:   udff[ph] = SHA-256(digits_only)
+        #                   audff[ph] = SHA-256('1' + digits_only)
         digits_only = re.sub(r'[^\d]', '', plaintext)
         if digits_only and digits_only != plaintext:
-            for phone_norm in (digits_only, '+1' + digits_only, '1' + digits_only):
+            for phone_norm in (digits_only, '+' + digits_only,
+                               '+1' + digits_only, '1' + digits_only):
                 enc_ph = phone_norm.encode('utf-8')
                 hashes.update({
                     hashlib.sha256(enc_ph).hexdigest(),
                     hashlib.sha1(enc_ph).hexdigest(),
                     hashlib.md5(enc_ph).hexdigest(),
                 })
+        # Names: vendors hash lowercase and lowercase-no-space variants.
+        # Meta/TikTok/Google typically SHA-256 the lowercase first name and
+        # lowercase last name separately (fn=, ln= params).
+        # We add lowercase and lowercase-stripped variants so that a name
+        # like "Matthew Vargas" matches hashes of "matthew" and "vargas".
+        stripped = plaintext.strip()
+        if stripped and not '@' in stripped and not digits_only == stripped:
+            # Full value lowercase
+            lc = stripped.lower()
+            if lc != stripped:
+                enc_lc = lc.encode('utf-8')
+                hashes.update({
+                    hashlib.sha256(enc_lc).hexdigest(),
+                    hashlib.sha1(enc_lc).hexdigest(),
+                    hashlib.md5(enc_lc).hexdigest(),
+                })
+            # Individual words (first name, last name separately)
+            words = lc.split()
+            if len(words) > 1:
+                for word in words:
+                    if len(word) >= 2:
+                        enc_word = word.encode('utf-8')
+                        hashes.update({
+                            hashlib.sha256(enc_word).hexdigest(),
+                            hashlib.sha1(enc_word).hexdigest(),
+                            hashlib.md5(enc_word).hexdigest(),
+                        })
         return hashes
 
     # Build a map: hash_value → (plaintext_value, plaintext_type)
@@ -2233,6 +2453,12 @@ def build_litigation_extract(results, risk):
             lines.append(f"    URL: {full_url[:100]}")
             lines.append(f"    Field: {field}")
             lines.append(f"    Value: {full_hash_val}  [{ptype}]")
+            # Surface any vendor-side flags (e.g. invalid_country on phone hashes)
+            pii_note = pii.get('note', '')
+            if pii_note and 'Full hash:' not in pii_note:
+                lines.append(f"    ⚑ Note: {pii_note}")
+            elif pii_note and 'invalid_country' in pii_note.lower():
+                lines.append(f"    ⚑ VENDOR FLAG: invalid_country — platform rejected this phone hash as invalid")
             if is_hash and verified_plaintext:
                 lines.append(f"    ✓ VERIFIED: cryptographically matches first-party {verified_type}")
             elif is_hash:
@@ -2291,6 +2517,11 @@ def build_litigation_extract(results, risk):
     # ── Session replay / behavioral vendors ─────────────────────────────────
     REPLAY_TYPES = {'session_replay', 'behavioral_tracking', 'lead_capture',
                     'call_tracking', 'analytics_replay', 'ctv_attribution'}
+    # RUM/APM vendors that are NOT replay — flag explicitly to prevent misclassification
+    RUM_APM_VENDORS = {
+        'datadog', 'dynatrace', 'new relic', 'newrelic', 'elastic', 'speedcurve',
+        'appdynamics', 'splunk', 'instana', 'lightstep', 'honeycomb',
+    }
     replay_vendors_found = {
         vkey: vdata for vkey, vdata in vendors.items()
         if vdata.get('vendor_type', '') in REPLAY_TYPES and vdata.get('request_count', 0) > 0
@@ -2334,11 +2565,39 @@ def build_litigation_extract(results, risk):
         }
         for vdata in replay_vendors_found.values():
             vtype = vdata.get('vendor_type', 'behavioral_tracking')
-            lines.append(f"\nVendor: {vdata['name']} [{REPLAY_LEGAL.get(vtype, '').__class__.__name__}: {vtype}]")
+            vname_lower = vdata['name'].lower()
+            lines.append(f"\nVendor: {vdata['name']} [{vtype}]")
             lines.append(f"  Requests detected: {vdata['request_count']}")
             lines.append(f"  PII confirmed in payloads: {vdata['pii_count']}")
             lines.append(f"  Legal characterization: {REPLAY_LEGAL.get(vtype, 'Third-party behavioral data collection')}")
+            # Flag if this vendor is primarily a RUM/APM tool
+            if any(rum in vname_lower for rum in RUM_APM_VENDORS):
+                lines.append(f"  ⚠ CLASSIFICATION NOTE: {vdata['name']} is primarily a "
+                             f"RUM/APM performance monitoring tool. Session replay capability "
+                             f"requires confirmation from replay-specific request endpoints "
+                             f"(e.g. /session-replay, sampled_for_replay=true). Do NOT assert "
+                             f"replay without such confirmation.")
         lines.append("")
+
+    # ── Vendor coverage summary (checklist for Claude) ────────────────────────
+    # This section lists every detected vendor with their request/PII counts.
+    # Claude MUST account for every vendor listed here in its report.
+    lines.append("=" * 60)
+    lines.append("VENDOR COVERAGE CHECKLIST (every vendor detected in this session)")
+    lines.append("Every vendor below must appear in the report. Do not omit any.")
+    lines.append("=" * 60)
+    for vdata in sorted(vendors.values(), key=lambda v: v.get('request_count', 0), reverse=True):
+        vname   = vdata['name']
+        vtype   = vdata.get('vendor_type', 'unknown')
+        n_req   = vdata.get('request_count', 0)
+        n_pii   = vdata.get('pii_count', 0)
+        n_bin   = vdata.get('binary_undecipherable', 0)
+        pii_types = list({p.get('type', '') for p in vdata.get('pii', [])})
+        pii_str = ', '.join(pii_types) if pii_types else 'none confirmed'
+        bin_note = f' | {n_bin} binary-opaque POST(s)' if n_bin else ''
+        lines.append(f"  • {vname} [{vtype}]: {n_req} request(s), {n_pii} PII item(s){bin_note}")
+        lines.append(f"    PII types: {pii_str}")
+    lines.append("")
 
     # ── Damages ───────────────────────────────────────────────────────────────
     lines.append("=" * 60)
@@ -2596,6 +2855,8 @@ CORE RULES:
 - Every factual claim must cite a specific HAR index, field name, or value from the data
 - Do not assume consent unless the data explicitly shows a consent mechanism
 - Operate at expert witness level — courtroom-ready language throughout
+- The extract includes a "VENDOR COVERAGE CHECKLIST" section listing every vendor detected. You MUST address every vendor on that list in your report — do not silently omit any. If a vendor has zero confirmed PII, say so explicitly rather than skipping it.
+- If any single request combines identity data (name, email, phone, address) with behavioral or commerce data (product SKUs, cart contents, search queries, loan amounts, purchase intent), call this out explicitly as identity-to-behavior linkage — it is legally significant beyond the identity data alone.
 
 OUTPUT FORMAT:
 Produce all 7 sections in order:
@@ -2645,7 +2906,114 @@ You MUST follow these rules strictly:
 - Only assert that a hash corresponds to a specific plaintext value if it is marked VERIFIED
 - If a hash is marked UNVERIFIED, state only that a hashed value was transmitted — do not claim to know what plaintext it represents
 - Never infer or assume a hash-to-plaintext linkage based on proximity of data points alone
-- In the damages analysis, unverified hashes inform which statute applies but do not add additional vendors or multiply the per-vendor rate"""
+- In the damages analysis, unverified hashes inform which statute applies but do not add additional vendors or multiply the per-vendor rate
+- When reproducing hash values in the report, copy them character-by-character from the extract. SHA-256 hashes are exactly 64 hex characters; SHA-1 are exactly 40; MD5 are exactly 32. Do not add, remove, or alter any characters.
+
+CRITICAL RULE — CONSENT:
+- The extract states consent as either CONFIRMED or NOT CONFIRMED IN CAPTURED TRAFFIC.
+- If the extract says NOT CONFIRMED, write: "No consent mechanism was confirmed in the captured network traffic." Do NOT write "no consent mechanism was present" or "no consent mechanism appeared" — those are broader claims the network traffic alone cannot support.
+- Consent banners, cookie dialogs, and opt-out mechanisms may exist in page HTML or through server-side logic not captured in the HAR. Do not assert their absence categorically.
+
+CRITICAL RULE — VENDOR CLASSIFICATION:
+- RUM/APM/performance telemetry vendors (Datadog, Dynatrace, New Relic, Elastic, Speedcurve) are performance monitoring tools, NOT session replay, unless the extract explicitly identifies replay-specific endpoints (e.g. /session-replay, /rec, sampled_for_replay=true).
+- If the extract includes a "sampled_for_replay=false" signal from a vendor, include this in your analysis as evidence that session replay was NOT active for this user.
+- Screen metadata, battery level, and device hardware identifiers are NOT biometric data under CIPA or CCPA. Do not classify them as such.
+- Matching telemetry values at two different vendors does NOT establish direct vendor-to-vendor data transfer. State only that both vendors received similar data, not that one transmitted to the other.
+
+CRITICAL RULE — PHONE HASH FLAGS:
+- TikTok's `signal_diagnostic_labels.raw_auto_phone` structure reports the status of each phone
+  hash it attempts to match. If this field contains `label: "invalid"` and
+  `abnormal_types: ["invalid_country"]`, it means TikTok's servers flagged the phone number as
+  not matching a valid country's format in their identity graph. INCLUDE this in your analysis:
+  state that the phone hash was transmitted to TikTok, that TikTok's own response flagged it as
+  `invalid_country`, and that this means the hash may not have resulted in a successful identity
+  match on TikTok's side — though the transmission itself still occurred and is still actionable.
+- The `suggested_values` array alongside `invalid_country` contains TikTok's alternative phone
+  hash normalizations that it suggests might match. These are still hash transmissions, even if
+  the primary normalization was flagged invalid.
+- If the extract notes that a vendor returned "invalid_country" or a similar rejection flag
+  alongside a phone hash, include this limitation explicitly rather than treating it as a
+  confirmed match in their identity graph. The act of transmission is separate from the act of
+  successful matching.
+
+CRITICAL RULE — META SUBSCRIBEDBUTTONCLICK AND FORM STRUCTURE INTERCEPTION:
+- Meta Pixel's `ev=SubscribedButtonClick` event type indicates the pixel captured a specific
+  button click by the user within a form. This is more invasive than a generic PageView or
+  ViewContent — it means Meta received: (1) the fact that the user clicked a specific button,
+  (2) the button's text (`cd[buttonText]`), (3) the button's destination/class, and (4) the
+  complete structural map of the form fields via `cd[formFeatures]`.
+- `cd[formFeatures]` is a JSON array that lists every form field on the page: field names, HTML
+  tags, input types (text, tel, email, radio, select, hidden), and element IDs. If the extract
+  reports this field, state that Meta received the architectural blueprint of the lead form,
+  including the presence of phone (`type=tel`), email (`type=email`), name (`type=text`), and
+  qualification radio buttons — this is form-structure-level interception, not merely page-level
+  tracking.
+- If `cd[buttonText]` is "No" or similar, note that Meta captured the user's response to a
+  specific prompt on the form — the content of that interaction, not just that the user visited.
+- `ev=SubscribedButtonClick` with hashed PII in the same payload means Meta received both the
+  user's identity AND their specific form interaction action in one request — the most complete
+  form of wiretap evidence in the payload set.
+
+CRITICAL RULE — META CAPI ADVANCED MATCHING FIELDS:
+- Meta Conversions API (CAPI) Advanced Matching transmits separate hashed fields for each PII datum.
+  The `udff` object carries standard Advanced Matching fields; `audff` carries additional/alternative
+  fields with array notation (e.g. `audff[fn][0][v]`). The `ncudff` and `cudff` variants use
+  different normalizations of the same underlying data. All variants are legally equivalent —
+  each is a hash of the user's personal information transmitted to Meta.
+  Field-to-plaintext mappings (confirmed by cryptographic verification):
+    udff[fn]           → SHA-256(lowercase first name)       e.g. SHA-256("chiaoning")
+    audff[fn][0][v]    → SHA-256(lowercase first name)       same normalization
+    udff[ln]           → SHA-256(lowercase last name)        e.g. SHA-256("vargas")
+    audff[ln][0][v]    → SHA-256(lowercase last name)        same normalization
+    udff[ph]           → SHA-256(digits-only phone)          e.g. SHA-256("6692375623")
+    audff[ph][0][v]    → SHA-256("1" + digits-only phone)    e.g. SHA-256("16692375623")
+    udff[st]           → SHA-256(state, normalization varies — may be 2-letter or full name)
+    audff[st][0][v]    → SHA-256(state, alternate normalization)
+    audff[ct][0][v]    → SHA-256(lowercase city)
+    audff[zp][0][v]    → SHA-256(5-digit zip)
+    audff[country][0][v] → SHA-256(lowercase ISO country code, e.g. "us")
+    ud[external_id]    → SHA-256 of an external/CRM identifier (plaintext unknown without source)
+    udff[em]           → SHA-256(lowercase email)
+    audff[em][0][v]    → SHA-256(lowercase email), same value repeated in audff
+- IMPORTANT: The `cudff` and `ncudff` fields typically appear redacted in HAR exports
+  (shown as ###... or ***...). Their presence confirms additional hash transmissions occurred
+  even when their values cannot be read from the HAR.
+- If the extract reports these fields, enumerate each one separately — first name, last name, phone,
+  and state are distinct legally significant transmissions beyond just the email hash.
+- State hash normalization is not universally confirmed — if the state hash cannot be verified
+  against a known plaintext, state only that a hashed state value was transmitted.
+- The `ncudff` prefix variant uses a different normalization (normalized canonical) of the same
+  underlying data — treat it as an additional transmission of the same PII type.
+
+CRITICAL RULE — BING UET TRANSACTION AMOUNTS:
+- Bing UET (Universal Event Tracking) beacons may include `ev` (event/transaction value, a dollar
+  amount) and `gc` (currency code). If the extract reports a "Transaction Amount (Bing UET)" PII
+  entry, this represents the cart or purchase dollar value transmitted to Microsoft.
+- Include this in your Vendor-by-Vendor matrix under the Microsoft/Bing Ads vendor row as
+  "Transaction Amount: $X.XX [CURRENCY]" — it is financially sensitive data, not merely a tracking
+  signal, and merits explicit mention in the expert declaration.
+
+CRITICAL RULE — FULLSTORY PAGE-INIT vs. REPLAY DATA:
+- FullStory `/rec/page` POSTs that contain a JSON body with `Events: 0` (zero events) are session
+  initialization pings, not replay data. They convey `OrgId`, `SessionId`, `PageId`, `Url`,
+  `Width`, and `Height` — metadata confirming the session started — but carry no keystroke, mouse,
+  or DOM replay events.
+- Do NOT claim "confirmed session replay data" solely from these zero-event pings. Instead write:
+  "FullStory session initialization confirmed (OrgId [X], SessionId [Y]); session replay SDK is
+  active. Actual replay event payloads may travel over a binary or compressed channel not captured
+  in this HAR."
+- If the extract separately identifies FullStory POSTs with `Events > 0`, those may be cited as
+  actual replay event transmissions.
+
+CRITICAL RULE — GLASSBOX SESSION REPLAY:
+- Glassbox Digital is a session replay and digital analytics vendor.
+  SDK domain: cdn.glassboxcdn.com (or cdn.glassbox.com)
+  Data endpoint: report.[customer].glassboxdigital.io
+- If the extract identifies Glassbox traffic, treat it as a full session replay vendor equivalent
+  to FullStory or Quantum Metric. Do not understate it as merely "analytics" — Glassbox's core
+  product is screen-level session recording and replay, which is the type of conduct at issue in
+  CIPA § 631 claims.
+- Report the number of POST transmissions and maximum payload size in your analysis."""
 
 DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
 
@@ -2684,6 +3052,19 @@ immediately after the Damages Analysis. Do not paraphrase or omit it.
 If the HAR analysis data contains a "NOTE — BINARY-ENCODED PAYLOADS" section,
 you MUST reproduce it verbatim as a clearly labelled section in your output,
 immediately after the Third-Party PII Transmissions section. Do not omit it.
+
+VENDOR COMPLETENESS CHECK: Before finalizing your output, cross-reference every
+vendor in the "VENDOR COVERAGE CHECKLIST" section against your report. If any
+vendor is missing from your Vendor-by-Vendor Data Classification Matrix, add it.
+A vendor with no confirmed PII should be listed with "No PII confirmed in payloads"
+plus any binary-encoding caveat — never omitted entirely.
+
+IDENTITY-COMMERCE LINKAGE: For any request where the same payload contains BOTH
+identity fields (name/email/phone/address) AND behavioral or commerce fields
+(search queries, product SKUs, cart contents, loan amounts, financial selections,
+question responses), explicitly flag this in both the timeline and the declaration
+as "identity-behavior linkage" or "identity-commerce linkage." This is a legally
+distinct and aggravating finding.
 ============================================================="""
 
 # Available models — updated via /api/admin/models/refresh
@@ -3608,14 +3989,14 @@ def analyze():
         if not file.filename.endswith('.har'):
             return jsonify({'error': 'File must be a .har file'}), 400
 
-        # Reject files over 150MB before reading into memory
+        # Reject files over 175MB before reading into memory
         file.seek(0, 2)  # seek to end
         file_bytes = file.tell()
         file.seek(0)     # seek back to start
-        if file_bytes > 150 * 1024 * 1024:
+        if file_bytes > 175 * 1024 * 1024:
             size_mb = file_bytes / 1024 / 1024
             return jsonify({
-                'error': f'File too large ({size_mb:.0f}MB). Maximum file size is 150MB. '
+                'error': f'File too large ({size_mb:.0f}MB). Maximum file size is 175MB. '
                          f'Consider splitting the session or using a shorter recording window.'
             }), 413
 
@@ -4108,7 +4489,7 @@ def analyze_bulk():
     import tempfile, shutil
 
     MAX_FILES     = 5
-    MAX_SIZE_BYTES = 150 * 1024 * 1024  # 150MB per file
+    MAX_SIZE_BYTES = 175 * 1024 * 1024  # 175MB per file
 
     files = request.files.getlist('files')
 
@@ -4154,7 +4535,7 @@ def analyze_bulk():
             if file_size > MAX_SIZE_BYTES:
                 size_mb = file_size / (1024 * 1024)
                 result = {'event': 'file_done', 'index': idx, 'filename': filename,
-                          'status': 'error', 'error': f'File too large ({size_mb:.0f}MB — max 150MB)',
+                          'status': 'error', 'error': f'File too large ({size_mb:.0f}MB — max 175MB)',
                           'current': idx + 1, 'total': total}
                 summaries.append(result)
                 os.unlink(tmp_path)
